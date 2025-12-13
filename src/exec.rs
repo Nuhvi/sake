@@ -60,6 +60,8 @@ impl ExecutionResult {
 /// Partial execution of a script.
 pub struct Exec {
     tx: TxTemplate,
+    leaf_hash: TapLeafHash,
+
     result: Option<ExecutionResult>,
 
     sighashcache: SighashCache<Transaction>,
@@ -127,7 +129,14 @@ impl Exec {
             Encodable::consensus_encode(&script_witness, &mut bitcoin::io::sink()).unwrap();
         let start_validation_weight = VALIDATION_WEIGHT_OFFSET + witness_size as i64;
 
+        let leaf_hash = TapLeafHash::from_script(
+            Script::from_bytes(script.as_bytes()),
+            taproot::LeafVersion::TapScript,
+        );
+
         Ok(Exec {
+            leaf_hash,
+
             result: None,
 
             sighashcache: SighashCache::new(tx.tx.clone()),
@@ -743,6 +752,7 @@ impl Exec {
         };
 
         let (leaf_hash, annex) = self.tx.taproot_annex_scriptleaf.as_ref().unwrap();
+
         let sighash = self
             .sighashcache
             .taproot_signature_hash(
@@ -751,7 +761,10 @@ impl Exec {
                 annex
                     .as_ref()
                     .map(|a| Annex::new(a).expect("we checked annex prefix before")),
-                Some((*leaf_hash, self.last_codeseparator_pos.unwrap_or(u32::MAX))),
+                Some((
+                    self.leaf_hash,
+                    self.last_codeseparator_pos.unwrap_or(u32::MAX),
+                )),
                 hashtype,
             )
             .expect("TODO(stevenroose) seems to only happen if prevout index out of bound");
