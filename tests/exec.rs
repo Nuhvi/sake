@@ -1,4 +1,4 @@
-use bitcoin::{ScriptBuf, TapLeafHash, Transaction, hashes::Hash, hex::DisplayHex};
+use bitcoin::{ScriptBuf, Transaction, hex::DisplayHex};
 
 use sake::exec::{Exec, TxTemplate};
 
@@ -10,8 +10,20 @@ fn basic() {
     let script_asm = "OP_IF OP_2 OP_ELSE OP_4 OP_4 OP_CAT OP_ENDIF";
 
     let script = ScriptBuf::from_asm(script_asm).expect("error parsing script");
-    println!("Script in hex: {}", script.as_bytes().to_lower_hex_string());
-    println!("Script size: {} bytes", script.as_bytes().len());
+    println!(
+        "Script in hex ({} bytes): {}",
+        script.as_bytes().len(),
+        script.as_bytes().to_lower_hex_string(),
+    );
+
+    let script_witness: Vec<Vec<u8>> = vec![vec![]];
+
+    let script_witness_bytes = script_witness.join::<&[u8]>(&[]);
+    println!(
+        "Script witness in hex ({} bytes): {}",
+        script_witness_bytes.len(),
+        script_witness_bytes.to_lower_hex_string(),
+    );
 
     let mut exec = Exec::new(
         TxTemplate {
@@ -23,10 +35,9 @@ fn basic() {
             },
             prevouts: vec![],
             input_idx: 0,
-            taproot_annex_scriptleaf: Some((TapLeafHash::all_zeros(), None)),
         },
         script,
-        vec![vec![]],
+        script_witness,
     )
     .expect("error creating exec");
 

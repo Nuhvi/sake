@@ -31,7 +31,6 @@ pub struct TxTemplate {
     pub tx: Transaction,
     pub prevouts: Vec<TxOut>,
     pub input_idx: usize,
-    pub taproot_annex_scriptleaf: Option<(TapLeafHash, Option<Vec<u8>>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,16 +96,6 @@ impl Exec {
         script: ScriptBuf,
         script_witness: Vec<Vec<u8>>,
     ) -> Result<Exec, Error> {
-        if tx.taproot_annex_scriptleaf.is_none() {
-            return Err(Error::Other("missing taproot tx info in tapscript context"));
-        }
-
-        if let Some((_, Some(ref annex))) = tx.taproot_annex_scriptleaf
-            && annex.first() != Some(&taproot::TAPROOT_ANNEX_PREFIX)
-        {
-            return Err(Error::Other("invalid annex: missing prefix"));
-        }
-
         // We want to make sure the script is valid so we don't have to throw parsing errors
         // while executing.
         let instructions = script.instructions_minimal();
