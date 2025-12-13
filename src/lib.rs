@@ -671,7 +671,7 @@ impl Exec {
             }
 
             OP_CHECKMULTISIG | OP_CHECKMULTISIGVERIFY => {
-                unimplemented!();
+                return Err(ExecError::TapscriptCheckMultiSig);
             }
 
             // remainder
