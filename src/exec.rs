@@ -4,7 +4,7 @@ use core::cmp;
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::{Hash, hash160, ripemd160, sha1, sha256, sha256d};
 use bitcoin::opcodes::{Opcode, all::*};
-use bitcoin::script::{self, Instruction, Instructions, Script, ScriptBuf};
+use bitcoin::script::{self, Instruction, Script, ScriptBuf};
 use bitcoin::sighash::{Prevouts, SighashCache};
 use bitcoin::taproot::{self, TapLeafHash};
 use bitcoin::transaction::{Transaction, TxOut};
@@ -59,31 +59,23 @@ pub struct Exec {
     result: Option<ExecutionResult>,
 
     sighashcache: SighashCache<Transaction>,
-    script: &'static Script,
-    instructions: Instructions<'static>,
+    script: Box<Script>,
+    // Store the instruction position manually instead of keeping an iterator
+    instruction_position: usize,
     current_position: usize,
     cond_stack: ConditionStack,
     stack: Stack,
     altstack: Stack,
     last_codeseparator_pos: Option<u32>,
-    // Initially set to the whole script, but updated when
-    // OP_CODESEPARATOR is encountered.
-    script_code: &'static Script,
+    // Track the code separator position instead of keeping a reference
+    script_code_start: usize,
 
     validation_weight: i64,
 
     secp: secp256k1::Secp256k1<secp256k1::All>,
 }
 
-impl std::ops::Drop for Exec {
-    fn drop(&mut self) {
-        // we need to safely drop the script we allocated
-        unsafe {
-            let script = core::mem::replace(&mut self.script, Script::from_bytes(&[]));
-            let _ = Box::from_raw(script as *const Script as *mut Script);
-        }
-    }
-}
+// No Drop impl needed anymore!
 
 impl Exec {
     pub fn new(
@@ -100,15 +92,7 @@ impl Exec {
             return Err(Error::InvalidScript(err));
         }
 
-        // *****
-        // Make sure there is no more possible exit path after this point!
-        // Otherwise we are leaking memory.
-        // *****
-
-        // We box allocate the script to get a static Instructions iterator.
-        // We will manually drop this allocation in the ops::Drop impl.
-        let script = Box::leak(script.into_boxed_script()) as &'static Script;
-        let instructions = script.instructions_minimal();
+        let script = script.into_boxed_script();
 
         //TODO(stevenroose) make this more efficient
         let witness_size =
@@ -129,7 +113,7 @@ impl Exec {
 
             sighashcache: SighashCache::new(tx.clone()),
             script,
-            instructions,
+            instruction_position: 0,
             current_position: 0,
             cond_stack: ConditionStack::default(),
             //TODO(stevenroose) does this need to be reversed?
@@ -137,7 +121,7 @@ impl Exec {
             altstack: Stack::new(),
             validation_weight: start_validation_weight,
             last_codeseparator_pos: None,
-            script_code: script,
+            script_code_start: 0,
 
             secp: secp256k1::Secp256k1::new(),
         })
@@ -152,12 +136,11 @@ impl Exec {
     }
 
     pub fn script_position(&self) -> usize {
-        self.script.len() - self.instructions.as_script().len()
+        self.instruction_position
     }
 
     pub fn remaining_script(&self) -> &Script {
-        let pos = self.script_position();
-        &self.script[pos..]
+        &self.script[self.instruction_position..]
     }
 
     pub fn stack(&self) -> &Stack {
@@ -178,9 +161,17 @@ impl Exec {
             return Err(res);
         }
 
-        self.current_position = self.script.len() - self.instructions.as_script().len();
-        let instruction = match self.instructions.next() {
-            Some(Ok(i)) => i,
+        // Get the next instruction from the remaining script
+        let remaining = &self.script[self.instruction_position..];
+        let mut instructions = remaining.instructions_minimal();
+
+        self.current_position = self.instruction_position;
+        let instruction = match instructions.next() {
+            Some(Ok(i)) => {
+                // Update position for next iteration
+                self.instruction_position = self.script.len() - instructions.as_script().len();
+                i
+            }
             None => {
                 let res = ExecutionResult::from_final_stack(self.stack.clone());
                 self.result = Some(res);
@@ -602,9 +593,9 @@ impl Exec {
             }
 
             OP_CODESEPARATOR => {
-                // Store this CODESEPARATOR position and update the scriptcode.
+                // Store this CODESEPARATOR position and update the script code start position.
                 self.last_codeseparator_pos = Some(self.current_position as u32);
-                self.script_code = &self.script[self.current_position..];
+                self.script_code_start = self.current_position;
             }
 
             OP_CHECKSIG | OP_CHECKSIGVERIFY => {
