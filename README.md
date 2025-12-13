@@ -5,7 +5,9 @@ Script Army Knife Emulator
 
 - Only Taproot
 - Only minimally encoded instructions
-- No Annex
+- No `Annex`
+- `OP_CODESEPARATOR` is a nop
+- `OP_CTLV` and `OP_CSV` are nops
 
 ## Acknowledgment
 

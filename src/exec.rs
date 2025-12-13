@@ -66,9 +66,6 @@ pub struct Exec {
     cond_stack: ConditionStack,
     stack: Stack,
     altstack: Stack,
-    last_codeseparator_pos: Option<u32>,
-    // Track the code separator position instead of keeping a reference
-    script_code_start: usize,
 
     validation_weight: i64,
 
@@ -120,8 +117,6 @@ impl Exec {
             stack: Stack::from_u8_vec(script_witness),
             altstack: Stack::new(),
             validation_weight: start_validation_weight,
-            last_codeseparator_pos: None,
-            script_code_start: 0,
 
             secp: secp256k1::Secp256k1::new(),
         })
@@ -135,20 +130,20 @@ impl Exec {
         self.result.as_ref()
     }
 
-    pub fn script_position(&self) -> usize {
-        self.instruction_position
-    }
-
-    pub fn remaining_script(&self) -> &Script {
-        &self.script[self.instruction_position..]
-    }
-
     pub fn stack(&self) -> &Stack {
         &self.stack
     }
 
     pub fn altstack(&self) -> &Stack {
         &self.altstack
+    }
+
+    pub fn script_position(&self) -> usize {
+        self.instruction_position
+    }
+
+    pub fn remaining_script(&self) -> &Script {
+        &self.script[self.instruction_position..]
     }
 
     ///////////////
@@ -593,9 +588,7 @@ impl Exec {
             }
 
             OP_CODESEPARATOR => {
-                // Store this CODESEPARATOR position and update the script code start position.
-                self.last_codeseparator_pos = Some(self.current_position as u32);
-                self.script_code_start = self.current_position;
+                // nop
             }
 
             OP_CHECKSIG | OP_CHECKSIGVERIFY => {
@@ -720,10 +713,7 @@ impl Exec {
                 self.input_idx,
                 &Prevouts::All(&self.prevouts),
                 None,
-                Some((
-                    self.leaf_hash,
-                    self.last_codeseparator_pos.unwrap_or(u32::MAX),
-                )),
+                Some((self.leaf_hash, u32::MAX)),
                 hashtype,
             )
             .expect("TODO(stevenroose) seems to only happen if prevout index out of bound");
