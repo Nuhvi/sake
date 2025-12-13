@@ -1,7 +1,9 @@
 use bitcoin::{ScriptBuf, TapLeafHash, Transaction, hashes::Hash, hex::DisplayHex};
 
-use super::helpers::FromAsm;
-use crate::{Exec, TxTemplate};
+use sake::exec::{Exec, TxTemplate};
+
+mod test_helpers;
+use test_helpers::FromAsm;
 
 #[test]
 fn basic() {
