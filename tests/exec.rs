@@ -1,6 +1,6 @@
-use bitcoin::{ScriptBuf, Transaction, hex::DisplayHex};
+use bitcoin::{Amount, ScriptBuf, Transaction, TxOut, hex::DisplayHex};
 
-use sake::exec::{Exec, TxTemplate};
+use sake::exec::Exec;
 
 mod test_helpers;
 use test_helpers::FromAsm;
@@ -26,16 +26,17 @@ fn basic() {
     );
 
     let mut exec = Exec::new(
-        TxTemplate {
-            tx: Transaction {
-                version: bitcoin::transaction::Version::TWO,
-                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-                input: vec![],
-                output: vec![],
-            },
-            prevouts: vec![],
-            input_idx: 0,
+        &Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![],
         },
+        vec![TxOut {
+            value: Amount::ZERO,
+            script_pubkey: ScriptBuf::new_p2a(),
+        }],
+        0,
         script,
         script_witness,
     )

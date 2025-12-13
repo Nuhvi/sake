@@ -27,12 +27,6 @@ const VALIDATION_WEIGHT_OFFSET: i64 = 50;
 /// Validation weight per passing signature (Tapscript only, see BIP 342).
 const VALIDATION_WEIGHT_PER_SIGOP_PASSED: i64 = 50;
 
-pub struct TxTemplate {
-    pub tx: Transaction,
-    pub prevouts: Vec<TxOut>,
-    pub input_idx: usize,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionResult {
     pub success: bool,
@@ -58,7 +52,8 @@ impl ExecutionResult {
 
 /// Partial execution of a script.
 pub struct Exec {
-    tx: TxTemplate,
+    prevouts: Vec<TxOut>,
+    input_idx: usize,
     leaf_hash: TapLeafHash,
 
     result: Option<ExecutionResult>,
@@ -92,7 +87,9 @@ impl std::ops::Drop for Exec {
 
 impl Exec {
     pub fn new(
-        tx: TxTemplate,
+        tx: &Transaction,
+        prevouts: Vec<TxOut>,
+        input_idx: usize,
         script: ScriptBuf,
         script_witness: Vec<Vec<u8>>,
     ) -> Result<Exec, Error> {
@@ -124,11 +121,13 @@ impl Exec {
         );
 
         Ok(Exec {
+            prevouts,
+            input_idx,
             leaf_hash,
 
             result: None,
 
-            sighashcache: SighashCache::new(tx.tx.clone()),
+            sighashcache: SighashCache::new(tx.clone()),
             script,
             instructions,
             current_position: 0,
@@ -140,26 +139,10 @@ impl Exec {
             last_codeseparator_pos: None,
             script_code: script,
 
-            tx,
-
             secp: secp256k1::Secp256k1::new(),
         })
     }
 
-    pub fn with_stack(
-        tx: TxTemplate,
-        script: ScriptBuf,
-        script_witness: Vec<Vec<u8>>,
-        stack: Stack,
-        altstack: Stack,
-    ) -> Result<Exec, Error> {
-        let mut ret = Self::new(tx, script, script_witness);
-        if let Ok(exec) = &mut ret {
-            exec.stack = stack;
-            exec.altstack = altstack;
-        }
-        ret
-    }
     //////////////////
     // SOME GETTERS //
     //////////////////
@@ -743,8 +726,8 @@ impl Exec {
         let sighash = self
             .sighashcache
             .taproot_signature_hash(
-                self.tx.input_idx,
-                &Prevouts::All(&self.tx.prevouts),
+                self.input_idx,
+                &Prevouts::All(&self.prevouts),
                 None,
                 Some((
                     self.leaf_hash,
