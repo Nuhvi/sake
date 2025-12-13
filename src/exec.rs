@@ -5,7 +5,7 @@ use bitcoin::consensus::Encodable;
 use bitcoin::hashes::{Hash, hash160, ripemd160, sha1, sha256, sha256d};
 use bitcoin::opcodes::{Opcode, all::*};
 use bitcoin::script::{self, Instruction, Instructions, Script, ScriptBuf};
-use bitcoin::sighash::{Annex, Prevouts, SighashCache};
+use bitcoin::sighash::{Prevouts, SighashCache};
 use bitcoin::taproot::{self, TapLeafHash};
 use bitcoin::transaction::{Transaction, TxOut};
 
@@ -751,16 +751,12 @@ impl Exec {
             (sig, TapSighashType::Default)
         };
 
-        let (leaf_hash, annex) = self.tx.taproot_annex_scriptleaf.as_ref().unwrap();
-
         let sighash = self
             .sighashcache
             .taproot_signature_hash(
                 self.tx.input_idx,
                 &Prevouts::All(&self.tx.prevouts),
-                annex
-                    .as_ref()
-                    .map(|a| Annex::new(a).expect("we checked annex prefix before")),
+                None,
                 Some((
                     self.leaf_hash,
                     self.last_codeseparator_pos.unwrap_or(u32::MAX),
