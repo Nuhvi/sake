@@ -4,7 +4,7 @@ use core::cmp::PartialEq;
 use core::slice::Iter;
 use std::{iter::Map, rc::Rc};
 
-use super::{ExecError, read_scriptint};
+use crate::exec::{ExecError, read_scriptint};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StackEntry {

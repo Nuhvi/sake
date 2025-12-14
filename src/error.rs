@@ -43,9 +43,6 @@ pub enum Error {
     /// A script failed to parse or was malformed.
     InvalidScript(script::Error),
 
-    /// Transaction has no inputs or no outputs.
-    EmptyInputsOrOutputs,
-
     /// Transaction has no SAKE locked inputs.
     NoRelevantInputsToValidate,
 

@@ -2,7 +2,11 @@ use bitcoin::{ScriptBuf, Transaction, TxOut, opcodes::all::OP_RETURN, script::In
 
 use crate::exec::{Error, Exec};
 
+pub mod error;
 pub mod exec;
+pub mod stack;
+
+// TODO: Add a helper function to convert Witness script to OP_RETURN output
 
 /// Prefix for SAKE scripts: OP_PUSHBYTES_4 + "SAKE" (ASCII)
 /// Corresponds to script: `OP_PUSHBYTES_4 53414b45`
@@ -10,10 +14,6 @@ const SAKE_SCRIPT_PREFIX: [u8; 5] = [0x04, 0x53, 0x41, 0x4B, 0x45]; // 4, 'S', '
 
 /// Validates SAKE scripts in a transaction.
 pub fn validate(tx: &Transaction, prevouts: &[TxOut], scripts: &[ScriptBuf]) -> Result<(), Error> {
-    if tx.input.is_empty() || tx.output.is_empty() {
-        return Err(Error::EmptyInputsOrOutputs);
-    }
-
     // Step 1: Collect indices of SAKE inputs
     let sake_input_indices: Vec<usize> = scripts
         .iter()

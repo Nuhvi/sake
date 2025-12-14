@@ -9,11 +9,8 @@ use bitcoin::sighash::{Prevouts, SighashCache};
 use bitcoin::taproot::{self, TapLeafHash};
 use bitcoin::transaction::{Transaction, TxOut};
 
-mod error;
-mod stack;
-
-pub use error::{Error, ExecError};
-pub use stack::{ConditionStack, Stack};
+pub use crate::error::{Error, ExecError};
+pub use crate::stack::{ConditionStack, Stack};
 
 /// Maximum number of bytes pushable to the stack
 const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
@@ -781,7 +778,7 @@ fn scriptint_parse(v: &[u8]) -> i64 {
     ret
 }
 
-fn read_scriptint(item: &[u8], size: usize) -> Result<i64, ExecError> {
+pub(crate) fn read_scriptint(item: &[u8], size: usize) -> Result<i64, ExecError> {
     read_scriptint_size(item, size).map_err(|e| match e {
         script::Error::NonMinimalPush => ExecError::MinimalData,
         // only possible if size is 4 or lower
