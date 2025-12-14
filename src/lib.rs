@@ -63,6 +63,8 @@ pub fn validate(tx: &Transaction, prevouts: &[TxOut], scripts: &[ScriptBuf]) -> 
 
                         // Return execution error
                         return Err(Error::Exec(err.clone()));
+                    } else if !exec_result.success {
+                        return Err(Error::ScriptVerificationFailed(input_idx));
                     }
 
                     break; // Script finished successfully

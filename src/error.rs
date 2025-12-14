@@ -52,4 +52,7 @@ pub enum Error {
     InvalidWitnessOutputFormat,
     /// A witness stack was encoded in an invalid or corrupt format.
     InvalidWitnessEncoding,
+
+    /// Invalid Taproot witness program
+    ScriptVerificationFailed(usize),
 }

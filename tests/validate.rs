@@ -7,7 +7,7 @@ use test_helpers::FromAsm;
 
 #[test]
 fn single_input() {
-    let script = "OP_PUSHBYTES_4 53414b45 OP_DROP OP_IF OP_2 OP_ELSE OP_4 OP_4 OP_CAT OP_ENDIF";
+    let script = "OP_PUSHBYTES_4 53414b45 OP_DROP OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF";
     let script_witnesses = "OP_RETURN OP_PUSHBYTES_2 0100";
 
     let tx = Transaction {
