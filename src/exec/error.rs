@@ -38,7 +38,21 @@ pub enum ExecError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
+    /// Execution of a SAKE script failed.
     Exec(ExecError),
+    /// A script failed to parse or was malformed.
     InvalidScript(script::Error),
-    Other(&'static str),
+
+    /// Transaction has no inputs or no outputs.
+    EmptyInputsOrOutputs,
+
+    /// Transaction has no SAKE locked inputs.
+    NoRelevantInputsToValidate,
+
+    /// Number of witness stacks does not match number of SAKE inputs.
+    WitnessCountMismatch { expected: usize, found: usize },
+    /// The last output does not follow the expected SAKE witness OP_RETURN format.
+    InvalidWitnessOutputFormat,
+    /// A witness stack was encoded in an invalid or corrupt format.
+    InvalidWitnessEncoding,
 }
