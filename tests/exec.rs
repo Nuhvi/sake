@@ -1,4 +1,4 @@
-use bitcoin::{Amount, ScriptBuf, Transaction, TxOut, hex::DisplayHex};
+use bitcoin::{Amount, ScriptBuf, Transaction, TxOut, hex::DisplayHex, sighash::SighashCache};
 
 use sake::exec::Exec;
 
@@ -25,22 +25,21 @@ fn basic() {
         script_witness_bytes.to_lower_hex_string(),
     );
 
-    let mut exec = Exec::new(
-        &Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![],
-            output: vec![],
-        },
-        vec![TxOut {
-            value: Amount::ZERO,
-            script_pubkey: ScriptBuf::new_p2a(),
-        }],
-        0,
-        script,
-        script_witness,
-    )
-    .expect("error creating exec");
+    let tx = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+        input: vec![],
+        output: vec![],
+    };
+    let mut sighashcache = SighashCache::new(tx);
+
+    let prevouts = vec![TxOut {
+        value: Amount::ZERO,
+        script_pubkey: ScriptBuf::new_p2a(),
+    }];
+
+    let mut exec = Exec::new(&mut sighashcache, &prevouts, 0, &script, script_witness)
+        .expect("error creating exec");
 
     loop {
         println!(

@@ -1,4 +1,7 @@
-use bitcoin::{ScriptBuf, Transaction, TxOut, opcodes::all::OP_RETURN, script::Instruction};
+use bitcoin::{
+    ScriptBuf, Transaction, TxOut, opcodes::all::OP_RETURN, script::Instruction,
+    sighash::SighashCache,
+};
 
 use crate::exec::{Error, Exec};
 
@@ -41,16 +44,17 @@ pub fn validate(tx: &Transaction, prevouts: &[TxOut], scripts: &[ScriptBuf]) -> 
         });
     }
 
+    let mut sighashcache = SighashCache::new(tx.clone());
+
     // Step 4: Execute each SAKE script with its witness
-    for (idx, &input_idx) in sake_input_indices.iter().enumerate() {
-        let witness_stack = &witness_stacks[idx];
+    for (input_idx, witness_stack) in sake_input_indices.into_iter().zip(witness_stacks) {
         let script = &scripts[input_idx];
 
         let mut exec = Exec::new(
-            tx,
-            prevouts.to_vec(),
+            &mut sighashcache,
+            prevouts,
             input_idx,
-            script.clone(),
+            script,
             witness_stack.clone(),
         )?;
 

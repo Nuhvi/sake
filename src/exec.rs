@@ -4,7 +4,7 @@ use core::cmp;
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::{Hash, hash160, ripemd160, sha1, sha256, sha256d};
 use bitcoin::opcodes::{Opcode, all::*};
-use bitcoin::script::{self, Instruction, Script, ScriptBuf};
+use bitcoin::script::{self, Instruction, Script};
 use bitcoin::sighash::{Prevouts, SighashCache};
 use bitcoin::taproot::{self, TapLeafHash};
 use bitcoin::transaction::{Transaction, TxOut};
@@ -48,15 +48,15 @@ impl ExecutionResult {
 }
 
 /// Partial execution of a script.
-pub struct Exec {
-    prevouts: Vec<TxOut>,
+pub struct Exec<'a> {
+    prevouts: &'a [TxOut],
     input_idx: usize,
     leaf_hash: TapLeafHash,
 
     result: Option<ExecutionResult>,
 
-    sighashcache: SighashCache<Transaction>,
-    script: Box<Script>,
+    sighashcache: &'a mut SighashCache<Transaction>,
+    script: &'a Script,
     // Store the instruction position manually instead of keeping an iterator
     instruction_position: usize,
     current_position: usize,
@@ -71,22 +71,20 @@ pub struct Exec {
 
 // No Drop impl needed anymore!
 
-impl Exec {
-    pub fn new(
-        tx: &Transaction,
-        prevouts: Vec<TxOut>,
+impl Exec<'_> {
+    pub fn new<'a>(
+        sighashcache: &'a mut SighashCache<Transaction>,
+        prevouts: &'a [TxOut],
         input_idx: usize,
-        script: ScriptBuf,
+        script: &'a Script,
         script_witness: Vec<Vec<u8>>,
-    ) -> Result<Exec, Error> {
+    ) -> Result<Exec<'a>, Error> {
         // We want to make sure the script is valid so we don't have to throw parsing errors
         // while executing.
         let instructions = script.instructions_minimal();
         if let Some(err) = instructions.clone().find_map(|res| res.err()) {
             return Err(Error::InvalidScript(err));
         }
-
-        let script = script.into_boxed_script();
 
         //TODO(stevenroose) make this more efficient
         let witness_size =
@@ -105,7 +103,7 @@ impl Exec {
 
             result: None,
 
-            sighashcache: SighashCache::new(tx.clone()),
+            sighashcache,
             script,
             instruction_position: 0,
             current_position: 0,
@@ -708,7 +706,7 @@ impl Exec {
             .sighashcache
             .taproot_signature_hash(
                 self.input_idx,
-                &Prevouts::All(&self.prevouts),
+                &Prevouts::All(self.prevouts),
                 None,
                 Some((self.leaf_hash, u32::MAX)),
                 hashtype,
