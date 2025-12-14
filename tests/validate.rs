@@ -7,7 +7,7 @@ use test_helpers::FromAsm;
 
 #[test]
 fn single_input() {
-    let script = "OP_PUSHBYTES_4 53414b45 OP_DROP OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF";
+    let script = "OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF";
     let script_witnesses = "OP_RETURN OP_PUSHBYTES_2 0100";
 
     let tx = Transaction {
@@ -52,13 +52,11 @@ fn two_inputs() {
     let scripts = vec![
         (
             0,
-            ScriptBuf::from_asm("OP_PUSHBYTES_4 53414b45 OP_DROP OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF")
-                .unwrap(),
+            ScriptBuf::from_asm("OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF").unwrap(),
         ),
         (
             1,
-            ScriptBuf::from_asm("OP_PUSHBYTES_4 53414b45 OP_DROP OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF")
-                .unwrap(),
+            ScriptBuf::from_asm("OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF").unwrap(),
         ),
     ];
 
