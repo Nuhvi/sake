@@ -43,9 +43,6 @@ pub enum Error {
     /// A script failed to parse or was malformed.
     InvalidScript(script::Error),
 
-    /// Transaction has no SAKE locked inputs.
-    NoRelevantInputsToValidate,
-
     /// Number of witness stacks does not match number of SAKE inputs.
     WitnessCountMismatch { expected: usize, found: usize },
     /// The last output does not follow the expected SAKE witness OP_RETURN format.

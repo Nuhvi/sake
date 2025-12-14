@@ -22,7 +22,7 @@ fn single_input() {
         }],
     };
 
-    let scripts = vec![ScriptBuf::from_asm(script).unwrap()];
+    let scripts = vec![(0, ScriptBuf::from_asm(script).unwrap())];
 
     let prevouts = vec![TxOut {
         value: Amount::ZERO,
@@ -50,10 +50,16 @@ fn two_inputs() {
     };
 
     let scripts = vec![
-        ScriptBuf::from_asm("OP_PUSHBYTES_4 53414b45 OP_DROP OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF")
-            .unwrap(),
-        ScriptBuf::from_asm("OP_PUSHBYTES_4 53414b45 OP_DROP OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF")
-            .unwrap(),
+        (
+            0,
+            ScriptBuf::from_asm("OP_PUSHBYTES_4 53414b45 OP_DROP OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF")
+                .unwrap(),
+        ),
+        (
+            1,
+            ScriptBuf::from_asm("OP_PUSHBYTES_4 53414b45 OP_DROP OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF")
+                .unwrap(),
+        ),
     ];
 
     let prevouts = vec![TxOut {
