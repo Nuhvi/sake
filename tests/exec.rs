@@ -1,6 +1,6 @@
 use bitcoin::{Amount, ScriptBuf, Transaction, TxOut, hex::DisplayHex, sighash::SighashCache};
 
-use sake::exec::Exec;
+use sake::Exec;
 
 mod test_helpers;
 use test_helpers::FromAsm;

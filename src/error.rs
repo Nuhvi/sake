@@ -37,6 +37,15 @@ pub enum ExecError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScriptWitnessError {
+    NotOpReturn,
+    MissingPrefix,
+    WrongVersion,
+    InvalidElementsCount,
+    InvalidStackElement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// Execution of a SAKE script failed.
     Exec(ExecError),
@@ -46,7 +55,7 @@ pub enum Error {
     /// Number of witness stacks does not match number of SAKE inputs.
     WitnessCountMismatch { expected: usize, found: usize },
     /// The last output does not follow the expected SAKE witness OP_RETURN format.
-    InvalidWitnessOutputFormat,
+    InvalidScriptWitness(ScriptWitnessError),
     /// A witness stack was encoded in an invalid or corrupt format.
     InvalidWitnessEncoding,
 

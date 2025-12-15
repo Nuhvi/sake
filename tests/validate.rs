@@ -8,7 +8,7 @@ use test_helpers::FromAsm;
 #[test]
 fn single_input() {
     let script = "OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF";
-    let script_witnesses = "OP_RETURN OP_PUSHBYTES_2 0100";
+    let script_witnesses = "OP_RETURN 53414b45 0x00 0x01 OP_0";
 
     let tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
@@ -35,7 +35,7 @@ fn single_input() {
 
 #[test]
 fn two_inputs() {
-    let script_witnesses = "OP_RETURN OP_PUSHBYTES_2 0100 OP_PUSHBYTES_3 010101";
+    let script_witnesses = "OP_RETURN 53414b45 0x00 0x0101 OP_0 0x01";
 
     let tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
