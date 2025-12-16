@@ -118,3 +118,52 @@ pub fn encode(stacks: &[Vec<Vec<u8>>]) -> ScriptBuf {
 
     ScriptBuf::new_op_return(data)
 }
+
+#[cfg(test)]
+mod test {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    // Define the constraints for the generated test case data.
+    prop_compose! {
+        // Generate a single byte vector (the innermost element)
+        fn arb_element()(
+            len in 0..=500usize,
+            bytes: Vec<u8>,
+        ) -> Vec<u8> {
+            bytes.into_iter().take(len).collect()
+        }
+    }
+
+    prop_compose! {
+        // Generate an entire Witness Stacks structure: Vec<Vec<Vec<u8>>>
+        fn arb_stacks()(
+            num_stacks in 0..=5usize,
+        ) (
+            stacks in proptest::collection::vec(
+                proptest::collection::vec(arb_element(), 0..=10),
+                num_stacks
+            )
+        ) -> Vec<Vec<Vec<u8>>> {
+            stacks
+        }
+    }
+
+    // The fuzz test function
+    proptest! {
+        #[test]
+        fn prop_round_trip_stacks(stacks in arb_stacks()) {
+            let encoded = encode(&stacks);
+
+            let parsed = match parse(&encoded) {
+                Ok(p) => p,
+                Err(e) => {
+                    panic!("Parsing failed unexpectedly: {:?} for stacks: {:?}", e, stacks);
+                }
+            };
+
+            assert_eq!(parsed, stacks, "Round-trip failed: original != parsed");
+        }
+    }
+}

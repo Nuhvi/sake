@@ -2,11 +2,12 @@ use bitcoin::{ScriptBuf, Transaction, TxOut, sighash::SighashCache};
 
 mod error;
 mod exec;
-pub mod script_witness;
+mod script_witness;
 mod stack;
 
 pub use crate::exec::Error;
 pub use exec::Exec;
+pub use script_witness::encode as script_witness_encode;
 
 /// Validates SAKE scripts in a transaction.
 ///

@@ -1,6 +1,6 @@
 use bitcoin::{Amount, ScriptBuf, Transaction, TxOut};
 
-use sake::{script_witness::encode, validate};
+use sake::{script_witness_encode, validate};
 
 mod test_helpers;
 use test_helpers::FromAsm;
@@ -8,7 +8,8 @@ use test_helpers::FromAsm;
 #[test]
 fn single_input() {
     let script = "OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF";
-    let script_witnesses = encode(&[vec![vec![]]]);
+
+    let scripts = vec![(0, ScriptBuf::from_asm(script).unwrap())];
 
     let tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
@@ -18,11 +19,9 @@ fn single_input() {
         ],
         output: vec![TxOut {
             value: Amount::ZERO,
-            script_pubkey: script_witnesses,
+            script_pubkey: script_witness_encode(&[vec![vec![]]]),
         }],
     };
-
-    let scripts = vec![(0, ScriptBuf::from_asm(script).unwrap())];
 
     let prevouts = vec![TxOut {
         value: Amount::ZERO,
@@ -35,20 +34,6 @@ fn single_input() {
 
 #[test]
 fn two_inputs() {
-    let script_witnesses = encode(&[vec![vec![]], vec![vec![1]]]);
-
-    let tx = Transaction {
-        version: bitcoin::transaction::Version::TWO,
-        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-        input: vec![
-        // Skip adding an input, since we are not using sighash
-        ],
-        output: vec![TxOut {
-            value: Amount::ZERO,
-            script_pubkey: script_witnesses,
-        }],
-    };
-
     let scripts = vec![
         (
             0,
@@ -59,6 +44,18 @@ fn two_inputs() {
             ScriptBuf::from_asm("OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF").unwrap(),
         ),
     ];
+
+    let tx = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+        input: vec![
+        // Skip adding an input, since we are not using sighash
+        ],
+        output: vec![TxOut {
+            value: Amount::ZERO,
+            script_pubkey: script_witness_encode(&[vec![vec![]], vec![vec![1]]]),
+        }],
+    };
 
     let prevouts = vec![TxOut {
         value: Amount::ZERO,
