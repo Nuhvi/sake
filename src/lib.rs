@@ -2,7 +2,7 @@ use bitcoin::{ScriptBuf, Transaction, TxOut, sighash::SighashCache};
 
 mod error;
 mod exec;
-mod script_witness;
+pub mod script_witness;
 mod stack;
 
 pub use crate::exec::Error;

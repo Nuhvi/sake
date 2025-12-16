@@ -1,6 +1,6 @@
 use bitcoin::{Amount, ScriptBuf, Transaction, TxOut};
 
-use sake::validate;
+use sake::{script_witness::encode, validate};
 
 mod test_helpers;
 use test_helpers::FromAsm;
@@ -8,7 +8,7 @@ use test_helpers::FromAsm;
 #[test]
 fn single_input() {
     let script = "OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF";
-    let script_witnesses = "OP_RETURN 53414b45 0x00 0x01 OP_0";
+    let script_witnesses = encode(&[vec![vec![]]]);
 
     let tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
@@ -18,7 +18,7 @@ fn single_input() {
         ],
         output: vec![TxOut {
             value: Amount::ZERO,
-            script_pubkey: ScriptBuf::from_asm(script_witnesses).unwrap(),
+            script_pubkey: script_witnesses,
         }],
     };
 
@@ -35,7 +35,7 @@ fn single_input() {
 
 #[test]
 fn two_inputs() {
-    let script_witnesses = "OP_RETURN 53414b45 0x00 0x0101 OP_0 0x01";
+    let script_witnesses = encode(&[vec![vec![]], vec![vec![1]]]);
 
     let tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
@@ -45,7 +45,7 @@ fn two_inputs() {
         ],
         output: vec![TxOut {
             value: Amount::ZERO,
-            script_pubkey: ScriptBuf::from_asm(script_witnesses).unwrap(),
+            script_pubkey: script_witnesses,
         }],
     };
 

@@ -41,8 +41,9 @@ pub enum ScriptWitnessError {
     NotOpReturn,
     MissingPrefix,
     WrongVersion,
+    InvalidStacksCount,
     InvalidElementsCount,
-    InvalidStackElement,
+    InvalidElement,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

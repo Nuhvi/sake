@@ -1,86 +1,120 @@
-use bitcoin::{ScriptBuf, opcodes::all::OP_RETURN, script::Instruction};
+use bitcoin::{
+    ScriptBuf, VarInt,
+    consensus::{Decodable, Encodable},
+    opcodes::all::OP_RETURN,
+    script::{Instruction, PushBytesBuf},
+};
+use std::io::{Cursor, Read}; // Added necessary imports
 
 use crate::error::ScriptWitnessError;
 
-const EXPECTED_VERSION: &[u8] = &[0];
+const PREFIX: &[u8] = b"SAKE";
+const EXPECTED_VERSION: u8 = 0;
 
 /// Parses witness stacks from an OP_RETURN script.
-/// Format:
-/// OP_RETURN
-///   <push: b"SAKE">
-///   <push: <version>>
-///   <push: [n0, n1, ..., nk]> // one byte per stack: item count for stack i
-///   <push: stack0_data0>
-///   <push: stack0_data1>
-///   <push: stack1_data0>
-///   <push: stack1_data1>
-///   ...
+///
+/// **Format:** OP_RETURN <push: SAKE | Version | K stacks | [N elements (VarInt)] | [E Element len | data]...>
 pub fn parse(script: &ScriptBuf) -> Result<Vec<Vec<Vec<u8>>>, ScriptWitnessError> {
     let mut instructions = script.instructions();
 
-    // 1. OP_RETURN
     match instructions.next() {
         Some(Ok(Instruction::Op(OP_RETURN))) => {}
         _ => return Err(ScriptWitnessError::NotOpReturn),
     }
 
-    // 2. "SAKE"
-    match instructions.next() {
-        Some(Ok(Instruction::PushBytes(bytes))) if bytes.as_bytes() == b"SAKE" => {}
-        _ => return Err(ScriptWitnessError::MissingPrefix),
-    }
-
-    // 3. Version (2 bytes, big-endian)
-    match instructions.next() {
-        Some(Ok(Instruction::PushBytes(bytes))) if bytes.as_bytes() == EXPECTED_VERSION => {}
-        _ => return Err(ScriptWitnessError::WrongVersion),
-    }
-
-    // 4. Stack item counts: one u8 per stack
-    let bytes = match instructions.next() {
+    let payload = match instructions.next() {
         Some(Ok(Instruction::PushBytes(bytes))) => bytes.as_bytes(),
-        _ => return Err(ScriptWitnessError::InvalidElementsCount),
+        _ => return Err(ScriptWitnessError::MissingPrefix),
     };
 
-    let mut stack_items_counts = vec![];
+    // Use a Cursor to read the payload, leveraging bitcoin::consensus::Decodable
+    let mut cursor = Cursor::new(payload);
 
-    for byte in bytes {
-        if *byte > 252 {
-            // TODO: support variable integer
-            return Err(ScriptWitnessError::InvalidElementsCount);
-        }
+    // --- Parse Payload Header (Prefix and Version) ---
 
-        stack_items_counts.push(byte)
+    let mut prefix_data = [0u8; PREFIX.len()];
+    if cursor.read_exact(&mut prefix_data).is_err() || prefix_data != *PREFIX {
+        return Err(ScriptWitnessError::MissingPrefix);
     }
 
-    // 5. Parse each witness stack (must be exactly `expected_stack_count` pushes)
-    let mut witness_stacks = Vec::with_capacity(stack_items_counts.len());
+    let mut version_data = [0u8; 1];
+    if cursor.read_exact(&mut version_data).is_err() || version_data[0] != EXPECTED_VERSION {
+        return Err(ScriptWitnessError::WrongVersion);
+    }
 
-    for expected_items_count in stack_items_counts.iter() {
-        let mut stack = vec![];
+    // --- Parse Stacks Count ---
 
-        for _ in 0..**expected_items_count as usize {
-            let x = instructions.next();
-            dbg!((&x, expected_items_count));
-            let element = match x {
-                Some(Ok(Instruction::PushBytes(bytes))) => bytes.as_bytes(),
-                Some(Ok(Instruction::Op(opcode))) => &[opcode.to_u8()],
-                _ => return Err(ScriptWitnessError::InvalidStackElement),
+    let k = match VarInt::consensus_decode(&mut cursor) {
+        Ok(v) => v.0 as usize,
+        Err(_) => return Err(ScriptWitnessError::InvalidStacksCount),
+    };
+
+    let mut witness_stacks = Vec::with_capacity(k);
+
+    // --- Parse Concatenated Stack Data ---
+
+    for _ in 0..k {
+        let n = match VarInt::consensus_decode(&mut cursor) {
+            Ok(v) => v.0 as usize,
+            Err(_) => return Err(ScriptWitnessError::InvalidElementsCount),
+        };
+
+        let mut stack = Vec::with_capacity(n);
+
+        for _ in 0..n {
+            let element_len = match VarInt::consensus_decode(&mut cursor) {
+                Ok(v) => v.0 as usize,
+                Err(_) => return Err(ScriptWitnessError::InvalidElement),
             };
-            dbg!((&x, expected_items_count));
 
-            stack.push(element.to_vec());
+            let mut element = vec![0u8; element_len];
+            if cursor.read_exact(&mut element).is_err() {
+                return Err(ScriptWitnessError::InvalidElement);
+            }
+
+            stack.push(element);
         }
 
         witness_stacks.push(stack);
     }
 
-    dbg!(&witness_stacks);
+    Ok(witness_stacks)
+}
 
-    // Ensure no extra instructions
-    if instructions.next().is_some() {
-        return Err(ScriptWitnessError::InvalidElementsCount);
+/// Serializes a vector of witness stacks into an OP_RETURN script.
+pub fn encode(stacks: &[Vec<Vec<u8>>]) -> ScriptBuf {
+    let mut bytes = vec![];
+
+    // 1. "SAKE" (4 bytes)
+    bytes.extend_from_slice(PREFIX);
+
+    // 2. Version (1 byte)
+    bytes.push(EXPECTED_VERSION);
+
+    // 3. Stacks count
+    VarInt(stacks.len() as u64)
+        .consensus_encode(&mut bytes)
+        .expect("write failed");
+
+    // 4. Stack items
+    for stack in stacks {
+        // 4.1 Stack len
+        VarInt(stack.len() as u64)
+            .consensus_encode(&mut bytes)
+            .expect("write failed");
+
+        // 3.2 Stack element
+        for element in stack {
+            VarInt(element.len() as u64)
+                .consensus_encode(&mut bytes)
+                .expect("write failed");
+            bytes.extend_from_slice(element);
+        }
     }
 
-    Ok(witness_stacks)
+    let mut data = PushBytesBuf::new();
+    data.extend_from_slice(&bytes)
+        .expect("Script witnesses too long");
+
+    ScriptBuf::new_op_return(data)
 }
