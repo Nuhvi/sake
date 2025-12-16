@@ -1,4 +1,4 @@
-use bitcoin::blockdata::script;
+use bitcoin::{blockdata::script, sighash::TaprootError};
 
 /// Error of a script execution.
 ///
@@ -62,4 +62,7 @@ pub enum Error {
 
     /// Invalid Taproot witness program
     ScriptVerificationFailed(usize),
+
+    /// Error signing inputs
+    SigningError(TaprootError),
 }

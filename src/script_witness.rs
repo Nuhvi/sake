@@ -159,7 +159,7 @@ mod test {
             let parsed = match parse(&encoded) {
                 Ok(p) => p,
                 Err(e) => {
-                    panic!("Parsing failed unexpectedly: {:?} for stacks: {:?}", e, stacks);
+                    panic!("Parsing failed unexpectedly: {e:?} for stacks: {stacks:?}");
                 }
             };
 

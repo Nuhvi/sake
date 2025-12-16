@@ -15,7 +15,7 @@ fn single_input() {
         version: bitcoin::transaction::Version::TWO,
         lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
         input: vec![
-        // Skip adding an input, since we are not using sighash
+            // Skip adding an input, since we are not using sighash
         ],
         output: vec![TxOut {
             value: Amount::ZERO,

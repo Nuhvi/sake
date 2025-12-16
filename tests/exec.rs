@@ -31,7 +31,7 @@ fn basic() {
         input: vec![],
         output: vec![],
     };
-    let mut sighashcache = SighashCache::new(tx);
+    let mut sighashcache = SighashCache::new(&tx);
 
     let prevouts = vec![TxOut {
         value: Amount::ZERO,

@@ -48,14 +48,14 @@ impl ExecutionResult {
 }
 
 /// Partial execution of a script.
-pub struct Exec<'a> {
+pub struct Exec<'a, 'b> {
     prevouts: &'a [TxOut],
     input_idx: usize,
     leaf_hash: TapLeafHash,
 
     result: Option<ExecutionResult>,
 
-    sighashcache: &'a mut SighashCache<Transaction>,
+    sighashcache: &'b mut SighashCache<&'a Transaction>,
     script: &'a Script,
     // Store the instruction position manually instead of keeping an iterator
     instruction_position: usize,
@@ -71,14 +71,14 @@ pub struct Exec<'a> {
 
 // No Drop impl needed anymore!
 
-impl Exec<'_> {
-    pub fn new<'a>(
-        sighashcache: &'a mut SighashCache<Transaction>,
+impl<'a, 'b> Exec<'a, 'b> {
+    pub fn new(
+        sighashcache: &'b mut SighashCache<&'a Transaction>,
         prevouts: &'a [TxOut],
         input_idx: usize,
         script: &'a Script,
         script_witness: Vec<Vec<u8>>,
-    ) -> Result<Exec<'a>, Error> {
+    ) -> Result<Exec<'a, 'b>, Error> {
         // We want to make sure the script is valid so we don't have to throw parsing errors
         // while executing.
         let instructions = script.instructions_minimal();
