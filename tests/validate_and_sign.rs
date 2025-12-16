@@ -21,11 +21,12 @@ fn test_validate_and_sign_success() {
     let public_key = keypair.x_only_public_key().0;
 
     // Input 0: Script that passes if witness is 1
-    // Input 1: Script that passes if witness is 0
+    // Input 2: Script that passes if witness is 0
     let script0 = ScriptBuf::from_asm("OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF").unwrap();
-    let script1 = ScriptBuf::from_asm("OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF").unwrap();
+    let script2 = ScriptBuf::from_asm("OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF").unwrap();
 
-    let scripts = vec![(0, script0), (1, script1)];
+    // Sign the first and last inputs
+    let scripts = vec![(0, script0), (2, script2)];
 
     // Data encoded in the OP_RETURN: [[ [1] ], [ [] ]]
     let encoded_witnesses = script_witness_encode(&[
@@ -37,7 +38,7 @@ fn test_validate_and_sign_success() {
     let tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
         lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-        input: vec![Default::default(), Default::default()],
+        input: vec![Default::default(), Default::default(), Default::default()],
         output: vec![TxOut {
             value: Amount::ZERO,
             script_pubkey: encoded_witnesses, // The OP_RETURN output
@@ -45,6 +46,10 @@ fn test_validate_and_sign_success() {
     };
 
     let prevouts = vec![
+        TxOut {
+            value: Amount::from_sat(1000),
+            script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
+        },
         TxOut {
             value: Amount::from_sat(1000),
             script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
