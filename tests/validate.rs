@@ -9,7 +9,7 @@ fn single_input() {
         // Input 0: Script that passes if witness is 0
         (0, script! { OP_IF { 0 } OP_ELSE { 1 } OP_ENDIF }.compile()),
     ];
-    let witness_carrier = ScriptBuf::new_sake_witness_carrier(&[
+    let witness_carrier = TxOut::sake_witness_carrier(&[
         vec![vec![]], // Ipnut 0 witness stack: [ OP_0 ]
     ]);
 
@@ -19,10 +19,7 @@ fn single_input() {
         input: vec![
             // Skip adding an input, since we are not using sighash
         ],
-        output: vec![TxOut {
-            value: Amount::ZERO,
-            script_pubkey: witness_carrier,
-        }],
+        output: vec![witness_carrier],
     };
 
     let prevouts = vec![TxOut {
@@ -42,7 +39,7 @@ fn two_inputs() {
         // Input 1: Script that passes if witness is 1
         (0, script! { OP_IF { 1 } OP_ELSE { 0 } OP_ENDIF }.compile()),
     ];
-    let witness_carrier = ScriptBuf::new_sake_witness_carrier(&[
+    let witness_carrier = TxOut::sake_witness_carrier(&[
         vec![vec![]],  // Ipnut 0 witness stack: [ OP_0 ]
         vec![vec![1]], // Ipnut 1 witness stack: [ OP_1 ]
     ]);
@@ -53,10 +50,7 @@ fn two_inputs() {
         input: vec![
         // Skip adding an input, since we are not using sighash
         ],
-        output: vec![TxOut {
-            value: Amount::ZERO,
-            script_pubkey: witness_carrier,
-        }],
+        output: vec![witness_carrier],
     };
 
     let prevouts = vec![TxOut {

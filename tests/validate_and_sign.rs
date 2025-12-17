@@ -19,8 +19,8 @@ fn test_validate_and_sign_success() {
         (2, script! { OP_IF { 0 } OP_ELSE { 1 } OP_ENDIF }.compile()),
     ];
 
-    // Data encoded in the OP_RETURN: [[ [1] ], [ [] ]]
-    let witness_carrier = ScriptBuf::new_sake_witness_carrier(&[
+    // Witness stacks encoded in witness carrier
+    let witness_carrier = TxOut::sake_witness_carrier(&[
         vec![vec![1]], // Ipnut 0 witness stack: [ OP_1 ]
         vec![vec![]],  // Ipnut 2 witness stack: [ OP_0 ]
     ]);
@@ -30,10 +30,7 @@ fn test_validate_and_sign_success() {
         version: bitcoin::transaction::Version::TWO,
         lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
         input: vec![Default::default(), Default::default(), Default::default()],
-        output: vec![TxOut {
-            value: Amount::ZERO,
-            script_pubkey: witness_carrier, // The OP_RETURN output
-        }],
+        output: vec![witness_carrier],
     };
 
     let secp = Secp256k1::new();

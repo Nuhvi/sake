@@ -1,5 +1,5 @@
 use bitcoin::{
-    Script, ScriptBuf, VarInt,
+    Amount, ScriptBuf, TxOut, VarInt,
     consensus::{Decodable, Encodable},
     opcodes::all::OP_RETURN,
     script::{Instruction, PushBytesBuf},
@@ -12,15 +12,13 @@ const PREFIX: &[u8] = b"SAKE";
 const EXPECTED_VERSION: u8 = 0;
 
 pub trait SakeWitnessCarrier {
-    fn new_sake_witness_carrier(stacks: &[Vec<Vec<u8>>]) -> ScriptBuf;
-}
-pub trait TryFromSakeWitnessCarrier {
-    fn try_into_witness_stacks(&self) -> Result<Vec<Vec<Vec<u8>>>, WitnessCarrierError>;
+    fn sake_witness_carrier(stacks: &[Vec<Vec<u8>>]) -> TxOut;
+    fn parse_witness_stacks(&self) -> Result<Vec<Vec<Vec<u8>>>, WitnessCarrierError>;
 }
 
-impl SakeWitnessCarrier for ScriptBuf {
+impl SakeWitnessCarrier for TxOut {
     /// Generates a SAKE witness carriers scriptPubkey from multiple script witness stacks
-    fn new_sake_witness_carrier(stacks: &[Vec<Vec<u8>>]) -> ScriptBuf {
+    fn sake_witness_carrier(stacks: &[Vec<Vec<u8>>]) -> TxOut {
         let mut bytes = vec![];
 
         // 1. "SAKE" (4 bytes)
@@ -54,16 +52,17 @@ impl SakeWitnessCarrier for ScriptBuf {
         data.extend_from_slice(&bytes)
             .expect("Script witnesses too long");
 
-        ScriptBuf::new_op_return(data)
+        TxOut {
+            value: Amount::ZERO,
+            script_pubkey: ScriptBuf::new_op_return(data),
+        }
     }
-}
 
-impl TryFromSakeWitnessCarrier for Script {
     /// Parses witness stacks from an OP_RETURN script.
     ///
     /// **Format:** OP_RETURN <push: SAKE | Version | K stacks | [N elements (VarInt)] | [E Element len | data]...>
-    fn try_into_witness_stacks(&self) -> Result<Vec<Vec<Vec<u8>>>, WitnessCarrierError> {
-        let mut instructions = self.instructions();
+    fn parse_witness_stacks(&self) -> Result<Vec<Vec<Vec<u8>>>, WitnessCarrierError> {
+        let mut instructions = self.script_pubkey.instructions();
 
         match instructions.next() {
             Some(Ok(Instruction::Op(OP_RETURN))) => {}
@@ -165,9 +164,9 @@ mod test {
     proptest! {
         #[test]
         fn prop_round_trip_stacks(stacks in arb_stacks()) {
-            let encoded = ScriptBuf::new_sake_witness_carrier(&stacks);
+            let witness_carrier = TxOut::sake_witness_carrier(&stacks);
 
-            let parsed = match encoded.as_script().try_into_witness_stacks() {
+            let parsed = match witness_carrier.parse_witness_stacks() {
                 Ok(p) => p,
                 Err(e) => {
                     panic!("Parsing failed unexpectedly: {e:?} for stacks: {stacks:?}");
