@@ -11,6 +11,8 @@ mod exec;
 mod stack;
 mod witness_carrier;
 
+use crate::witness_carrier::TryFromSakeWitnessCarrier;
+
 pub use crate::exec::Error;
 pub use exec::Exec;
 pub use witness_carrier::SakeWitnessCarrier;
@@ -111,7 +113,11 @@ fn validate_with_sighashcache<'a>(
 
     // Step 1: Extract witness stacks from the last output if it's OP_RETURN
     let witness_stacks = if let Some(last_output) = last_output {
-        witness_carrier::parse(&last_output.script_pubkey).map_err(Error::InvalidScriptWitness)?
+        last_output
+            .script_pubkey
+            .as_script()
+            .try_into_witness_stacks()
+            .map_err(Error::InvalidWitnessCarriers)?
     } else {
         vec![]
     };
