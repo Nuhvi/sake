@@ -11,16 +11,16 @@ use bitcoin::{
 use super::parse_opcode;
 
 /// Trait that something can be parsed from ASM.
-pub trait FromAsm: Sized {
+pub trait ParseAsm {
     /// Parses `Self` from ASM.
-    fn from_asm(asm: &str) -> Result<Self, FromAsmError>;
+    fn parse_asm(self) -> Result<ScriptBuf, ParseAsmError>;
 }
 
-impl FromAsm for ScriptBuf {
-    fn from_asm(asm: &str) -> Result<Self, FromAsmError> {
+impl ParseAsm for &'static str {
+    fn parse_asm(self: &'static str) -> Result<ScriptBuf, ParseAsmError> {
         let mut buf = Vec::with_capacity(65);
         let mut builder = Builder::new();
-        let mut words = iter_words(asm);
+        let mut words = iter_words(self);
         while let Some((pos, mut word)) = words.next() {
             // We have this special case in our formatter.
             if word == "OP_0" {
@@ -32,9 +32,9 @@ impl FromAsm for ScriptBuf {
                 if op.to_u8() <= OP_PUSHDATA4.to_u8() {
                     let (next, push) = words
                         .next()
-                        .ok_or(err(pos, FromAsmErrorKind::UnexpectedEOF))?;
+                        .ok_or(err(pos, ParseAsmErrorKind::UnexpectedEOF))?;
                     if !try_parse_raw_hex(push, &mut buf) {
-                        return Err(err(next, FromAsmErrorKind::InvalidHex));
+                        return Err(err(next, ParseAsmErrorKind::InvalidHex));
                     }
                     // NB our API doesn't actually allow us to make byte pushes with
                     // non-minimal length prefix, so we can only check and error if
@@ -46,13 +46,13 @@ impl FromAsm for ScriptBuf {
                         n if n < 0x100 => opcodes::all::OP_PUSHDATA1,
                         n if n < 0x10000 => opcodes::all::OP_PUSHDATA2,
                         n if n < 0x100000000 => opcodes::all::OP_PUSHDATA4,
-                        _ => return Err(err(next, FromAsmErrorKind::PushExceedsMaxSize)),
+                        _ => return Err(err(next, ParseAsmErrorKind::PushExceedsMaxSize)),
                     };
                     if op != expected_push_op {
-                        return Err(err(pos, FromAsmErrorKind::NonMinimalBytePush));
+                        return Err(err(pos, ParseAsmErrorKind::NonMinimalBytePush));
                     }
                     let push = <&PushBytes>::try_from(&buf[..])
-                        .map_err(|_| err(next, FromAsmErrorKind::PushExceedsMaxSize))?;
+                        .map_err(|_| err(next, ParseAsmErrorKind::PushExceedsMaxSize))?;
                     builder = builder.push_slice(push);
                 } else {
                     builder = builder.push_opcode(op);
@@ -74,10 +74,10 @@ impl FromAsm for ScriptBuf {
             }
             if try_parse_raw_hex(word, &mut buf) {
                 let push = <&PushBytes>::try_from(&buf[..])
-                    .map_err(|_| err(pos, FromAsmErrorKind::PushExceedsMaxSize))?;
+                    .map_err(|_| err(pos, ParseAsmErrorKind::PushExceedsMaxSize))?;
                 builder = builder.push_slice(push);
             } else {
-                return Err(err(pos, FromAsmErrorKind::UnknownInstruction));
+                return Err(err(pos, ParseAsmErrorKind::UnknownInstruction));
             }
         }
         Ok(builder.into_script())
@@ -111,14 +111,14 @@ fn iter_words(asm: &str) -> impl Iterator<Item = ((usize, usize), &str)> {
     })
 }
 
-fn err(position: (usize, usize), kind: FromAsmErrorKind) -> FromAsmError {
-    FromAsmError { position, kind }
+fn err(position: (usize, usize), kind: ParseAsmErrorKind) -> ParseAsmError {
+    ParseAsmError { position, kind }
 }
 
-/// The different kinds of [`FromAsmError`] that can occur.
+/// The different kinds of [`ParseAsmError`] that can occur.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum FromAsmErrorKind {
+pub enum ParseAsmErrorKind {
     /// ASM ended unexpectedly.
     UnexpectedEOF,
     /// We were not able to interpret the instruction.
@@ -132,14 +132,14 @@ pub enum FromAsmErrorKind {
     /// This is not necessarily invalid, but we can't construct such pushes.
     NonMinimalBytePush,
 }
-/// Error from parsing Script ASM.
+/// Error ParseASM.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FromAsmError {
+pub struct ParseAsmError {
     /// The position of the instruction that caused the error.
     ///
     /// The value is (line, word) with word incremented after
     /// every chunk of whitespace.
     pub position: (usize, usize),
     /// The kind of error that occurred.
-    pub kind: FromAsmErrorKind,
+    pub kind: ParseAsmErrorKind,
 }

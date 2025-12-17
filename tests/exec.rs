@@ -3,13 +3,14 @@ use bitcoin::{Amount, ScriptBuf, Transaction, TxOut, hex::DisplayHex, sighash::S
 use sake::Exec;
 
 mod test_helpers;
-use test_helpers::FromAsm;
+use test_helpers::ParseAsm;
 
 #[test]
 fn basic() {
-    let script_asm = "OP_IF OP_2 OP_ELSE OP_4 OP_4 OP_CAT OP_ENDIF";
+    let script = "OP_IF OP_2 OP_ELSE OP_4 OP_4 OP_CAT OP_ENDIF"
+        .parse_asm()
+        .expect("error parsing script");
 
-    let script = ScriptBuf::from_asm(script_asm).expect("error parsing script");
     println!(
         "Script in hex ({} bytes): {}",
         script.as_bytes().len(),

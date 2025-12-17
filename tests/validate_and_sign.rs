@@ -9,7 +9,7 @@ use bitcoin::{
 use sake::{SakeWitnessCarrier, validate_and_sign};
 
 mod test_helpers;
-use test_helpers::FromAsm;
+use test_helpers::ParseAsm;
 
 #[test]
 fn test_validate_and_sign_success() {
@@ -21,8 +21,8 @@ fn test_validate_and_sign_success() {
 
     // Input 0: Script that passes if witness is 1
     // Input 2: Script that passes if witness is 0
-    let script0 = ScriptBuf::from_asm("OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF").unwrap();
-    let script2 = ScriptBuf::from_asm("OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF").unwrap();
+    let script0 = "OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF".parse_asm().unwrap();
+    let script2 = "OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF".parse_asm().unwrap();
 
     // Sign the first and last inputs
     let scripts = vec![(0, script0), (2, script2)];
