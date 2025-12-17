@@ -1,15 +1,20 @@
 use bitcoin::{Amount, ScriptBuf, Transaction, TxOut, hex::DisplayHex, sighash::SighashCache};
+use bitcoin_script::script;
 
 use sake::Exec;
 
-mod test_helpers;
-use test_helpers::ParseAsm;
-
 #[test]
 fn basic() {
-    let script = "OP_IF OP_2 OP_ELSE OP_4 OP_4 OP_CAT OP_ENDIF"
-        .parse_asm()
-        .expect("error parsing script");
+    let script = script! {
+        OP_IF
+            { 2 }
+        OP_ELSE
+            { 4 }
+            { 4 }
+            OP_CAT
+        OP_ENDIF
+    }
+    .compile();
 
     println!(
         "Script in hex ({} bytes): {}",

@@ -5,32 +5,24 @@ use bitcoin::{
     secp256k1::{Message, Secp256k1},
     sighash::{Prevouts, SighashCache},
 };
+use bitcoin_script::script;
 
 use sake::{SakeWitnessCarrier, validate_and_sign};
 
-mod test_helpers;
-use test_helpers::ParseAsm;
-
 #[test]
 fn test_validate_and_sign_success() {
-    let secp = Secp256k1::new();
-
-    let secret_key = [0x42; 32];
-    let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-    let public_key = keypair.x_only_public_key().0;
-
-    // Input 0: Script that passes if witness is 1
-    // Input 2: Script that passes if witness is 0
-    let script0 = "OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF".parse_asm().unwrap();
-    let script2 = "OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF".parse_asm().unwrap();
-
     // Sign the first and last inputs
-    let scripts = vec![(0, script0), (2, script2)];
+    let scripts = vec![
+        // Input 0: Script that passes if witness is 1
+        (0, script! { OP_IF { 1 } OP_ELSE { 0 } OP_ENDIF }.compile()),
+        // Input 2: Script that passes if witness is 0
+        (2, script! { OP_IF { 0 } OP_ELSE { 1 } OP_ENDIF }.compile()),
+    ];
 
     // Data encoded in the OP_RETURN: [[ [1] ], [ [] ]]
-    let sake_witness_carrier = ScriptBuf::new_sake_witness_carrier(&[
-        vec![vec![1]], // For input 0: logic takes OP_IF path -> passes
-        vec![vec![]],  // For input 1: logic takes OP_ELSE path -> passes
+    let witness_carrier = ScriptBuf::new_sake_witness_carrier(&[
+        vec![vec![1]], // Ipnut 0 witness stack: [ OP_1 ]
+        vec![vec![]],  // Ipnut 2 witness stack: [ OP_0 ]
     ]);
 
     // MUST have at least 2 inputs because we are signing input 0 and 1
@@ -40,9 +32,15 @@ fn test_validate_and_sign_success() {
         input: vec![Default::default(), Default::default(), Default::default()],
         output: vec![TxOut {
             value: Amount::ZERO,
-            script_pubkey: sake_witness_carrier, // The OP_RETURN output
+            script_pubkey: witness_carrier, // The OP_RETURN output
         }],
     };
+
+    let secp = Secp256k1::new();
+
+    let secret_key = [0x42; 32];
+    let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+    let public_key = keypair.x_only_public_key().0;
 
     let prevouts = vec![
         TxOut {

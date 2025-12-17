@@ -1,15 +1,17 @@
 use bitcoin::{Amount, ScriptBuf, Transaction, TxOut};
+use bitcoin_script::script;
 
 use sake::{SakeWitnessCarrier, validate};
 
-mod test_helpers;
-use test_helpers::ParseAsm;
-
 #[test]
 fn single_input() {
-    let script = "OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF";
-
-    let scripts = vec![(0, script.parse_asm().unwrap())];
+    let scripts = vec![
+        // Input 0: Script that passes if witness is 0
+        (0, script! { OP_IF { 0 } OP_ELSE { 1 } OP_ENDIF }.compile()),
+    ];
+    let witness_carrier = ScriptBuf::new_sake_witness_carrier(&[
+        vec![vec![]], // Ipnut 0 witness stack: [ OP_0 ]
+    ]);
 
     let tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
@@ -19,7 +21,7 @@ fn single_input() {
         ],
         output: vec![TxOut {
             value: Amount::ZERO,
-            script_pubkey: ScriptBuf::new_sake_witness_carrier(&[vec![vec![]]]),
+            script_pubkey: witness_carrier,
         }],
     };
 
@@ -35,9 +37,15 @@ fn single_input() {
 #[test]
 fn two_inputs() {
     let scripts = vec![
-        (0, "OP_IF OP_0 OP_ELSE OP_1 OP_ENDIF".parse_asm().unwrap()),
-        (1, "OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF".parse_asm().unwrap()),
+        // Input 0: Script that passes if witness is 0
+        (0, script! { OP_IF { 0 } OP_ELSE { 1 } OP_ENDIF }.compile()),
+        // Input 1: Script that passes if witness is 1
+        (0, script! { OP_IF { 1 } OP_ELSE { 0 } OP_ENDIF }.compile()),
     ];
+    let witness_carrier = ScriptBuf::new_sake_witness_carrier(&[
+        vec![vec![]],  // Ipnut 0 witness stack: [ OP_0 ]
+        vec![vec![1]], // Ipnut 1 witness stack: [ OP_1 ]
+    ]);
 
     let tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
@@ -47,7 +55,7 @@ fn two_inputs() {
         ],
         output: vec![TxOut {
             value: Amount::ZERO,
-            script_pubkey: ScriptBuf::new_sake_witness_carrier(&[vec![vec![]], vec![vec![1]]]),
+            script_pubkey: witness_carrier,
         }],
     };
 
