@@ -81,42 +81,48 @@ pub fn parse(script: &ScriptBuf) -> Result<Vec<Vec<Vec<u8>>>, ScriptWitnessError
     Ok(witness_stacks)
 }
 
-/// Serializes a vector of witness stacks into an OP_RETURN script.
-pub fn encode(stacks: &[Vec<Vec<u8>>]) -> ScriptBuf {
-    let mut bytes = vec![];
+pub trait SakeWitnessCarrier {
+    fn new_sake_witness_carrier(stacks: &[Vec<Vec<u8>>]) -> Self;
+}
 
-    // 1. "SAKE" (4 bytes)
-    bytes.extend_from_slice(PREFIX);
+impl SakeWitnessCarrier for ScriptBuf {
+    /// Generates a SAKE witness carriers scriptPubkey from multiple script witness stacks
+    fn new_sake_witness_carrier(stacks: &[Vec<Vec<u8>>]) -> Self {
+        let mut bytes = vec![];
 
-    // 2. Version (1 byte)
-    bytes.push(EXPECTED_VERSION);
+        // 1. "SAKE" (4 bytes)
+        bytes.extend_from_slice(PREFIX);
 
-    // 3. Stacks count
-    VarInt(stacks.len() as u64)
-        .consensus_encode(&mut bytes)
-        .expect("write failed");
+        // 2. Version (1 byte)
+        bytes.push(EXPECTED_VERSION);
 
-    // 4. Stack items
-    for stack in stacks {
-        // 4.1 Stack len
-        VarInt(stack.len() as u64)
+        // 3. Stacks count
+        VarInt(stacks.len() as u64)
             .consensus_encode(&mut bytes)
             .expect("write failed");
 
-        // 3.2 Stack element
-        for element in stack {
-            VarInt(element.len() as u64)
+        // 4. Stack items
+        for stack in stacks {
+            // 4.1 Stack len
+            VarInt(stack.len() as u64)
                 .consensus_encode(&mut bytes)
                 .expect("write failed");
-            bytes.extend_from_slice(element);
+
+            // 3.2 Stack element
+            for element in stack {
+                VarInt(element.len() as u64)
+                    .consensus_encode(&mut bytes)
+                    .expect("write failed");
+                bytes.extend_from_slice(element);
+            }
         }
+
+        let mut data = PushBytesBuf::new();
+        data.extend_from_slice(&bytes)
+            .expect("Script witnesses too long");
+
+        ScriptBuf::new_op_return(data)
     }
-
-    let mut data = PushBytesBuf::new();
-    data.extend_from_slice(&bytes)
-        .expect("Script witnesses too long");
-
-    ScriptBuf::new_op_return(data)
 }
 
 #[cfg(test)]
@@ -154,7 +160,7 @@ mod test {
     proptest! {
         #[test]
         fn prop_round_trip_stacks(stacks in arb_stacks()) {
-            let encoded = encode(&stacks);
+            let encoded = ScriptBuf::new_sake_witness_carrier(&stacks);
 
             let parsed = match parse(&encoded) {
                 Ok(p) => p,

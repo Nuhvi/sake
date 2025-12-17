@@ -6,8 +6,7 @@ use bitcoin::{
     sighash::{Prevouts, SighashCache},
 };
 
-use sake::script_witness_encode;
-use sake::validate_and_sign;
+use sake::{SakeWitnessCarrier, validate_and_sign};
 
 mod test_helpers;
 use test_helpers::FromAsm;
@@ -29,7 +28,7 @@ fn test_validate_and_sign_success() {
     let scripts = vec![(0, script0), (2, script2)];
 
     // Data encoded in the OP_RETURN: [[ [1] ], [ [] ]]
-    let encoded_witnesses = script_witness_encode(&[
+    let sake_witness_carrier = ScriptBuf::new_sake_witness_carrier(&[
         vec![vec![1]], // For input 0: logic takes OP_IF path -> passes
         vec![vec![]],  // For input 1: logic takes OP_ELSE path -> passes
     ]);
@@ -41,7 +40,7 @@ fn test_validate_and_sign_success() {
         input: vec![Default::default(), Default::default(), Default::default()],
         output: vec![TxOut {
             value: Amount::ZERO,
-            script_pubkey: encoded_witnesses, // The OP_RETURN output
+            script_pubkey: sake_witness_carrier, // The OP_RETURN output
         }],
     };
 

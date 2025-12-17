@@ -1,6 +1,6 @@
 use bitcoin::{Amount, ScriptBuf, Transaction, TxOut};
 
-use sake::{script_witness_encode, validate};
+use sake::{SakeWitnessCarrier, validate};
 
 mod test_helpers;
 use test_helpers::FromAsm;
@@ -19,7 +19,7 @@ fn single_input() {
         ],
         output: vec![TxOut {
             value: Amount::ZERO,
-            script_pubkey: script_witness_encode(&[vec![vec![]]]),
+            script_pubkey: ScriptBuf::new_sake_witness_carrier(&[vec![vec![]]]),
         }],
     };
 
@@ -53,7 +53,7 @@ fn two_inputs() {
         ],
         output: vec![TxOut {
             value: Amount::ZERO,
-            script_pubkey: script_witness_encode(&[vec![vec![]], vec![vec![1]]]),
+            script_pubkey: ScriptBuf::new_sake_witness_carrier(&[vec![vec![]], vec![vec![1]]]),
         }],
     };
 

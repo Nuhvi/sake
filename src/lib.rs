@@ -8,12 +8,12 @@ use bitcoin::{
 
 mod error;
 mod exec;
-mod script_witness;
 mod stack;
+mod witness_carrier;
 
 pub use crate::exec::Error;
 pub use exec::Exec;
-pub use script_witness::encode as script_witness_encode;
+pub use witness_carrier::SakeWitnessCarrier;
 
 /// Validates SAKE scripts in a transaction.
 ///
@@ -111,7 +111,7 @@ fn validate_with_sighashcache<'a>(
 
     // Step 1: Extract witness stacks from the last output if it's OP_RETURN
     let witness_stacks = if let Some(last_output) = last_output {
-        script_witness::parse(&last_output.script_pubkey).map_err(Error::InvalidScriptWitness)?
+        witness_carrier::parse(&last_output.script_pubkey).map_err(Error::InvalidScriptWitness)?
     } else {
         vec![]
     };
