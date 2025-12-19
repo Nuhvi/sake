@@ -10,11 +10,15 @@ use bitcoin::taproot::{self, TapLeafHash};
 use bitcoin::transaction::{Transaction, TxOut};
 
 pub use crate::error::{Error, ExecError};
-use crate::exec::sake_opcodes::op_csfs::OP_CSFS;
 pub use crate::stack::{ConditionStack, Stack};
 
-mod sake_opcodes;
-mod schnorr;
+mod op_checksig;
+mod sake_opcodes {
+    pub mod op_cat;
+    pub mod op_csfs;
+}
+
+pub use sake_opcodes::op_csfs::OP_CHECKSIGFROMSTACK;
 
 /// Maximum number of bytes pushable to the stack
 const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
@@ -57,7 +61,7 @@ pub struct Exec<'a, 'b> {
     input_idx: usize,
     leaf_hash: TapLeafHash,
 
-    result: Option<ExecutionResult>,
+    pub(crate) result: Option<ExecutionResult>,
 
     sighashcache: &'b mut SighashCache<&'a Transaction>,
     script: &'a Script,
@@ -205,8 +209,8 @@ impl<'a, 'b> Exec<'a, 'b> {
                 // nops
             }
 
-            // OP_CSFS [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
-            OP_CSFS => self.handle_op_csfs()?,
+            // OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
+            OP_CHECKSIGFROMSTACK => self.handle_op_csfs()?,
 
             //
             // Control
@@ -560,7 +564,7 @@ impl<'a, 'b> Exec<'a, 'b> {
             OP_CHECKSIG | OP_CHECKSIGVERIFY => {
                 let sig = self.stack.topstr(-2)?.clone();
                 let pk = self.stack.topstr(-1)?.clone();
-                let res = self.check_sig(&sig, &pk)?;
+                let res = self.verify_transaction_signature(&sig, &pk)?;
                 self.stack.popn(2).unwrap();
                 if op == OP_CHECKSIGVERIFY && !res {
                     return Err(ExecError::CheckSigVerify);
@@ -575,7 +579,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                 let sig = self.stack.topstr(-3)?.clone();
                 let mut n = self.stack.topnum(-2)?;
                 let pk = self.stack.topstr(-1)?.clone();
-                let res = self.check_sig(&sig, &pk)?;
+                let res = self.verify_transaction_signature(&sig, &pk)?;
                 self.stack.popn(3).unwrap();
                 if res {
                     n += 1;

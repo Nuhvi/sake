@@ -22,10 +22,7 @@ impl<'a, 'b> Exec<'a, 'b> {
 mod tests {
     use bitcoin_script::script;
 
-    use crate::{
-        Error,
-        exec::{ExecError, sake_opcodes::tests::validate_single_script},
-    };
+    use crate::{Error, exec::ExecError, tests::validate_single_script};
 
     #[test]
     fn test_op_cat_success() {

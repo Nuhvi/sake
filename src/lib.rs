@@ -16,6 +16,8 @@ use exec::Exec;
 pub use error::Error;
 pub use witness_carrier::SakeWitnessCarrier;
 
+pub use exec::OP_CHECKSIGFROMSTACK;
+
 /// Validates SAKE scripts in a transaction.
 ///
 /// - `tx`: The transaction (used to calculate the sighash) and the last output contains the script witnesses as an OP_RETURN
@@ -157,4 +159,27 @@ fn validate_with_sighashcache<'a>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+
+    use bitcoin::{ScriptBuf, Transaction, TxOut};
+
+    use crate::{Error, SakeWitnessCarrier, validate};
+
+    pub(crate) fn validate_single_script(
+        script: ScriptBuf,
+        witness: Vec<Vec<u8>>,
+    ) -> Result<(), Error> {
+        let dummy_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![TxOut::sake_witness_carrier(&[witness])],
+        };
+        let prevouts = vec![];
+
+        validate(&dummy_tx, &prevouts, &[(0, script)])
+    }
 }
