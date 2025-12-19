@@ -10,7 +10,7 @@ fn single_input() {
         (0, script! { OP_IF { 0 } OP_ELSE { 1 } OP_ENDIF }.compile()),
     ];
     let witness_carrier = TxOut::sake_witness_carrier(&[
-        vec![vec![]], // Ipnut 0 witness stack: [ OP_0 ]
+        (0, vec![vec![]]), // Ipnut 0 witness stack: [ OP_0 ]
     ]);
 
     let tx = Transaction {
@@ -37,11 +37,11 @@ fn two_inputs() {
         // Input 0: Script that passes if witness is 0
         (0, script! { OP_IF { 0 } OP_ELSE { 1 } OP_ENDIF }.compile()),
         // Input 1: Script that passes if witness is 1
-        (0, script! { OP_IF { 1 } OP_ELSE { 0 } OP_ENDIF }.compile()),
+        (1, script! { OP_IF { 1 } OP_ELSE { 0 } OP_ENDIF }.compile()),
     ];
     let witness_carrier = TxOut::sake_witness_carrier(&[
-        vec![vec![]],  // Ipnut 0 witness stack: [ OP_0 ]
-        vec![vec![1]], // Ipnut 1 witness stack: [ OP_1 ]
+        (0, vec![vec![]]),  // Ipnut 0 witness stack: [ OP_0 ]
+        (1, vec![vec![1]]), // Ipnut 1 witness stack: [ OP_1 ]
     ]);
 
     let tx = Transaction {

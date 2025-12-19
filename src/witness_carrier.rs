@@ -12,13 +12,14 @@ const PREFIX: &[u8] = b"SAKE";
 const EXPECTED_VERSION: u8 = 0;
 
 pub trait SakeWitnessCarrier {
-    fn sake_witness_carrier(stacks: &[Vec<Vec<u8>>]) -> TxOut;
-    fn parse_witness_stacks(&self) -> Result<Vec<Vec<Vec<u8>>>, WitnessCarrierError>;
+    fn sake_witness_carrier(stacks: &[(usize, Vec<Vec<u8>>)]) -> TxOut;
+    #[allow(clippy::type_complexity)]
+    fn parse_witness_stacks(&self) -> Result<Vec<(usize, Vec<Vec<u8>>)>, WitnessCarrierError>;
 }
 
 impl SakeWitnessCarrier for TxOut {
     /// Generates a SAKE witness carriers scriptPubkey from multiple script witness stacks
-    fn sake_witness_carrier(stacks: &[Vec<Vec<u8>>]) -> TxOut {
+    fn sake_witness_carrier(stacks: &[(usize, Vec<Vec<u8>>)]) -> TxOut {
         let mut bytes = vec![];
 
         // 1. "SAKE" (4 bytes)
@@ -27,19 +28,19 @@ impl SakeWitnessCarrier for TxOut {
         // 2. Version (1 byte)
         bytes.push(EXPECTED_VERSION);
 
-        // 3. Stacks count
-        VarInt(stacks.len() as u64)
-            .consensus_encode(&mut bytes)
-            .expect("write failed");
+        // Stacks
+        for (input_index, stack) in stacks {
+            // 4.1
+            VarInt(*input_index as u64)
+                .consensus_encode(&mut bytes)
+                .expect("write failed");
 
-        // 4. Stack items
-        for stack in stacks {
-            // 4.1 Stack len
+            // 4.2 Stack len
             VarInt(stack.len() as u64)
                 .consensus_encode(&mut bytes)
                 .expect("write failed");
 
-            // 3.2 Stack element
+            // 4.3 Stack elements
             for element in stack {
                 VarInt(element.len() as u64)
                     .consensus_encode(&mut bytes)
@@ -60,8 +61,8 @@ impl SakeWitnessCarrier for TxOut {
 
     /// Parses witness stacks from an OP_RETURN script.
     ///
-    /// **Format:** OP_RETURN <push: SAKE | Version | K stacks | [N elements (VarInt)] | [E Element len | data]...>
-    fn parse_witness_stacks(&self) -> Result<Vec<Vec<Vec<u8>>>, WitnessCarrierError> {
+    /// **Format:** OP_RETURN <push: SAKE | Version | [I Input Index (VarInt)] | [N elements (VarInt)] | [E Element len | data]...>
+    fn parse_witness_stacks(&self) -> Result<Vec<(usize, Vec<Vec<u8>>)>, WitnessCarrierError> {
         let mut instructions = self.script_pubkey.instructions();
 
         match instructions.next() {
@@ -89,18 +90,16 @@ impl SakeWitnessCarrier for TxOut {
             return Err(WitnessCarrierError::WrongVersion);
         }
 
-        // --- Parse Stacks Count ---
+        // --- Parse Stacks ---
 
-        let k = match VarInt::consensus_decode(&mut cursor) {
-            Ok(v) => v.0 as usize,
-            Err(_) => return Err(WitnessCarrierError::InvalidStacksCount),
-        };
+        let mut witness_stacks = Vec::new();
 
-        let mut witness_stacks = Vec::with_capacity(k);
-
-        // --- Parse Concatenated Stack Data ---
-
-        for _ in 0..k {
+        // Check if there is more data to read (cursor position < payload length)
+        while (cursor.position() as usize) < payload.len() {
+            let input_index = match VarInt::consensus_decode(&mut cursor) {
+                Ok(v) => v.0 as usize,
+                Err(_) => return Err(WitnessCarrierError::InvalidInputIndex),
+            };
             let n = match VarInt::consensus_decode(&mut cursor) {
                 Ok(v) => v.0 as usize,
                 Err(_) => return Err(WitnessCarrierError::InvalidElementsCount),
@@ -122,7 +121,7 @@ impl SakeWitnessCarrier for TxOut {
                 stack.push(element);
             }
 
-            witness_stacks.push(stack);
+            witness_stacks.push((input_index, stack));
         }
 
         Ok(witness_stacks)
@@ -155,8 +154,8 @@ mod test {
                 proptest::collection::vec(arb_element(), 0..=10),
                 num_stacks
             )
-        ) -> Vec<Vec<Vec<u8>>> {
-            stacks
+        ) -> Vec<(usize,Vec<Vec<u8>>)> {
+            stacks.into_iter().enumerate().collect()
         }
     }
 

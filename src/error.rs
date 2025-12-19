@@ -44,6 +44,7 @@ pub enum WitnessCarrierError {
     MissingPrefix,
     WrongVersion,
     InvalidStacksCount,
+    InvalidInputIndex,
     InvalidElementsCount,
     InvalidElement,
 }
@@ -57,6 +58,8 @@ pub enum Error {
 
     /// Number of witness stacks does not match number of SAKE inputs.
     WitnessCountMismatch { expected: usize, found: usize },
+    /// Provided scripts don't have the same input indexes as in the witness carrier
+    WitnessIndexesMismatch { expected: usize, found: usize },
     /// The last output does not follow the expected SAKE witness OP_RETURN format.
     InvalidWitnessCarriers(WitnessCarrierError),
     /// A witness stack was encoded in an invalid or corrupt format.

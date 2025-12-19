@@ -21,8 +21,8 @@ fn test_validate_and_sign_success() {
 
     // Witness stacks encoded in witness carrier
     let witness_carrier = TxOut::sake_witness_carrier(&[
-        vec![vec![1]], // Ipnut 0 witness stack: [ OP_1 ]
-        vec![vec![]],  // Ipnut 2 witness stack: [ OP_0 ]
+        (0, vec![vec![1]]), // Ipnut 0 witness stack: [ OP_1 ]
+        (2, vec![vec![]]),  // Ipnut 2 witness stack: [ OP_0 ]
     ]);
 
     // MUST have at least 2 inputs because we are signing input 0 and 1

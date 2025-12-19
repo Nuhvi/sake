@@ -159,7 +159,14 @@ fn validate_with_sighashcache<'a>(
     }
 
     // Step 3: Execute each input script with its witness
-    for ((input_idx, script), witness_stack) in inputs.iter().zip(witness_stacks) {
+    for ((input_idx, script), (witness_index, witness_stack)) in inputs.iter().zip(witness_stacks) {
+        if *input_idx != witness_index {
+            return Err(Error::WitnessIndexesMismatch {
+                expected: witness_index,
+                found: *input_idx,
+            });
+        }
+
         let mut exec = Exec::new(
             sighashcache,
             prevouts,
@@ -203,7 +210,7 @@ mod tests {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::absolute::LockTime::ZERO,
             input: vec![],
-            output: vec![TxOut::sake_witness_carrier(&[witness])],
+            output: vec![TxOut::sake_witness_carrier(&[(0, witness)])],
         };
         let prevouts = vec![];
 
