@@ -1,18 +1,20 @@
-use bitcoin::{TapSighashType, XOnlyPublicKey, secp256k1};
+use bitcoin::secp256k1;
 use core::cmp;
 
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::{Hash, hash160, ripemd160, sha1, sha256, sha256d};
 use bitcoin::opcodes::{Opcode, all::*};
 use bitcoin::script::{self, Instruction, Script};
-use bitcoin::sighash::{Prevouts, SighashCache};
+use bitcoin::sighash::SighashCache;
 use bitcoin::taproot::{self, TapLeafHash};
 use bitcoin::transaction::{Transaction, TxOut};
 
 pub use crate::error::{Error, ExecError};
+use crate::exec::sake_opcodes::op_csfs::OP_CSFS;
 pub use crate::stack::{ConditionStack, Stack};
 
 mod sake_opcodes;
+mod schnorr;
 
 /// Maximum number of bytes pushable to the stack
 const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
@@ -117,30 +119,6 @@ impl<'a, 'b> Exec<'a, 'b> {
         })
     }
 
-    //////////////////
-    // SOME GETTERS //
-    //////////////////
-
-    pub fn result(&self) -> Option<&ExecutionResult> {
-        self.result.as_ref()
-    }
-
-    pub fn stack(&self) -> &Stack {
-        &self.stack
-    }
-
-    pub fn altstack(&self) -> &Stack {
-        &self.altstack
-    }
-
-    pub fn script_position(&self) -> usize {
-        self.instruction_position
-    }
-
-    pub fn remaining_script(&self) -> &Script {
-        &self.script[self.instruction_position..]
-    }
-
     ///////////////
     // EXECUTION //
     ///////////////
@@ -223,12 +201,12 @@ impl<'a, 'b> Exec<'a, 'b> {
 
             // OP_CTLV and OP_CSV are noop
             OP_NOP | OP_NOP1 | OP_CLTV | OP_CSV | OP_NOP4 | OP_NOP5 | OP_NOP6 | OP_NOP7
-            | OP_NOP8 | OP_NOP9 | OP_NOP10 => {
+            | OP_NOP8 | OP_NOP10 => {
                 // nops
             }
 
-            // OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
-            // OP_CHECKSIGFROMSTACK => self.handle_op_checksigfromstack()?,
+            // OP_CSFS [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
+            OP_CSFS => self.handle_op_csfs()?,
 
             //
             // Control
@@ -644,73 +622,6 @@ impl<'a, 'b> Exec<'a, 'b> {
         };
         self.result = Some(res);
         Err(self.result.as_ref().unwrap())
-    }
-
-    fn check_sig(&mut self, sig: &[u8], pk: &[u8]) -> Result<bool, ExecError> {
-        if !sig.is_empty() {
-            self.validation_weight -= VALIDATION_WEIGHT_PER_SIGOP_PASSED;
-            if self.validation_weight < 0 {
-                return Err(ExecError::TapscriptValidationWeight);
-            }
-        }
-
-        if pk.is_empty() {
-            Err(ExecError::PubkeyType)
-        } else if pk.len() == 32 {
-            if !sig.is_empty() {
-                self.check_sig_schnorr(sig, pk)?;
-                Ok(true)
-            } else {
-                Ok(false)
-            }
-        } else {
-            Ok(true)
-        }
-    }
-
-    /// [pk] should be passed as 32-bytes.
-    fn check_sig_schnorr(&mut self, sig: &[u8], pk: &[u8]) -> Result<(), ExecError> {
-        assert_eq!(pk.len(), 32);
-
-        if sig.len() != 64 && sig.len() != 65 {
-            return Err(ExecError::SchnorrSigSize);
-        }
-
-        let pk = XOnlyPublicKey::from_slice(pk).expect("TODO(stevenroose) what to do here?");
-        let (sig, hashtype) = if sig.len() == 65 {
-            let b = *sig.last().unwrap();
-            let sig = secp256k1::schnorr::Signature::from_slice(&sig[0..sig.len() - 1])
-                .map_err(|_| ExecError::SchnorrSig)?;
-
-            if b == TapSighashType::Default as u8 {
-                return Err(ExecError::SchnorrSigHashtype);
-            }
-            //TODO(stevenroose) core does not error here
-            let sht =
-                TapSighashType::from_consensus_u8(b).map_err(|_| ExecError::SchnorrSigHashtype)?;
-            (sig, sht)
-        } else {
-            let sig = secp256k1::schnorr::Signature::from_slice(sig)
-                .map_err(|_| ExecError::SchnorrSig)?;
-            (sig, TapSighashType::Default)
-        };
-
-        let sighash = self
-            .sighashcache
-            .taproot_signature_hash(
-                self.input_idx,
-                &Prevouts::All(self.prevouts),
-                None,
-                Some((self.leaf_hash, u32::MAX)),
-                hashtype,
-            )
-            .expect("TODO(stevenroose) seems to only happen if prevout index out of bound");
-
-        if self.secp.verify_schnorr(&sig, &sighash.into(), &pk) != Ok(()) {
-            return Err(ExecError::SchnorrSig);
-        }
-
-        Ok(())
     }
 }
 

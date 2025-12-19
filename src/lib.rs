@@ -11,8 +11,9 @@ mod exec;
 mod stack;
 mod witness_carrier;
 
-pub use crate::exec::Error;
-pub use exec::Exec;
+use exec::Exec;
+
+pub use error::Error;
 pub use witness_carrier::SakeWitnessCarrier;
 
 /// Validates SAKE scripts in a transaction.
