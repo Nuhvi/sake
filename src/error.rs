@@ -34,6 +34,8 @@ pub enum ExecError {
     // new ones for us
     ScriptIntNumericOverflow,
     Debug,
+
+    Done(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +63,7 @@ pub enum Error {
     InvalidWitnessEncoding,
 
     /// Invalid Taproot witness program
-    ScriptVerificationFailed(usize),
+    ScriptVerificationFailed { input: usize },
 
     /// Error signing inputs
     SigningError(TaprootError),

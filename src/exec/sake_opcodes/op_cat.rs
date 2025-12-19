@@ -6,8 +6,8 @@ impl<'a, 'b> Exec<'a, 'b> {
     pub(crate) fn handle_op_cat(&mut self) -> Result<(), ExecError> {
         // (x1 x2 -- x1|x2)
         self.stack.needn(2)?;
-        let x2 = self.stack.popstr().unwrap();
-        let x1 = self.stack.popstr().unwrap();
+        let x2 = self.stack.popstr()?;
+        let x1 = self.stack.popstr()?;
         let ret: Vec<u8> = x1.into_iter().chain(x2).collect();
         if ret.len() > MAX_SCRIPT_ELEMENT_SIZE {
             return Err(ExecError::PushSize);

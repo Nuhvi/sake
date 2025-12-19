@@ -17,7 +17,8 @@ pub enum StackEntry {
 pub fn scriptint_vec(n: i64) -> Vec<u8> {
     let mut buf = [0u8; 8];
     let len = write_scriptint(&mut buf, n);
-    buf[0..len].to_vec()
+
+    buf.get(..len).map(|s| s.to_vec()).unwrap_or_default()
 }
 
 impl StackEntry {
@@ -50,11 +51,18 @@ impl Stack {
     }
 
     pub fn top(&self, offset: isize) -> Result<&StackEntry, ExecError> {
-        debug_assert!(offset < 0, "offsets should be < 0");
+        if offset >= 0 {
+            debug_assert!(offset >= 0, "offsets should be < 0");
+            return Err(ExecError::InvalidStackOperation);
+        }
+        if offset.abs() > self.len() as isize {
+            return Err(ExecError::InvalidStackOperation);
+        }
+
         self.0
             .len()
             .checked_sub(offset.unsigned_abs())
-            .map(|i| &self.0[i])
+            .and_then(|i| self.0.get(i))
             .ok_or(ExecError::InvalidStackOperation)
     }
 

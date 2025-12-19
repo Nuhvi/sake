@@ -32,36 +32,11 @@ const VALIDATION_WEIGHT_OFFSET: i64 = 50;
 /// Validation weight per passing signature (Tapscript only, see BIP 342).
 const VALIDATION_WEIGHT_PER_SIGOP_PASSED: i64 = 50;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExecutionResult {
-    pub success: bool,
-    pub error: Option<ExecError>,
-    pub opcode: Option<Opcode>,
-    pub final_stack: Stack,
-}
-
-impl ExecutionResult {
-    fn from_final_stack(final_stack: Stack) -> ExecutionResult {
-        ExecutionResult {
-            success: if final_stack.len() != 1 {
-                false
-            } else {
-                script::read_scriptbool(&final_stack.last().unwrap())
-            },
-            final_stack,
-            error: None,
-            opcode: None,
-        }
-    }
-}
-
 /// Partial execution of a script.
 pub struct Exec<'a, 'b> {
     prevouts: &'a [TxOut],
     input_idx: usize,
     leaf_hash: TapLeafHash,
-
-    pub(crate) result: Option<ExecutionResult>,
 
     sighashcache: &'b mut SighashCache<&'a Transaction>,
     script: &'a Script,
@@ -93,8 +68,8 @@ impl<'a, 'b> Exec<'a, 'b> {
         }
 
         //TODO(stevenroose) make this more efficient
-        let witness_size =
-            Encodable::consensus_encode(&script_witness, &mut bitcoin::io::sink()).unwrap();
+        let witness_size = Encodable::consensus_encode(&script_witness, &mut bitcoin::io::sink())
+            .expect("witness size");
         let start_validation_weight = VALIDATION_WEIGHT_OFFSET + witness_size as i64;
 
         let leaf_hash = TapLeafHash::from_script(
@@ -106,8 +81,6 @@ impl<'a, 'b> Exec<'a, 'b> {
             prevouts,
             input_idx,
             leaf_hash,
-
-            result: None,
 
             sighashcache,
             script,
@@ -128,11 +101,7 @@ impl<'a, 'b> Exec<'a, 'b> {
     ///////////////
 
     /// Returns true when execution is done.
-    pub fn exec_next(&mut self) -> Result<(), &ExecutionResult> {
-        if let Some(ref res) = self.result {
-            return Err(res);
-        }
-
+    pub fn exec_next(&mut self) -> Result<(), ExecError> {
         // Get the next instruction from the remaining script
         let remaining = &self.script[self.instruction_position..];
         let mut instructions = remaining.instructions_minimal();
@@ -145,9 +114,13 @@ impl<'a, 'b> Exec<'a, 'b> {
                 i
             }
             None => {
-                let res = ExecutionResult::from_final_stack(self.stack.clone());
-                self.result = Some(res);
-                return Err(self.result.as_ref().unwrap());
+                let success = self
+                    .stack
+                    .last()
+                    .ok()
+                    .map(|l| script::read_scriptbool(&l))
+                    .unwrap_or_default();
+                return Err(ExecError::Done(success));
             }
             Some(Err(_)) => unreachable!("we checked the script beforehand"),
         };
@@ -156,7 +129,7 @@ impl<'a, 'b> Exec<'a, 'b> {
         match instruction {
             Instruction::PushBytes(p) => {
                 if p.len() > MAX_SCRIPT_ELEMENT_SIZE {
-                    return self.fail(ExecError::PushSize);
+                    return Err(ExecError::PushSize);
                 }
                 if exec {
                     self.stack.pushstr(p.as_bytes());
@@ -168,10 +141,10 @@ impl<'a, 'b> Exec<'a, 'b> {
                 match op {
                     OP_SUBSTR | OP_LEFT | OP_RIGHT | OP_INVERT | OP_AND | OP_OR | OP_XOR
                     | OP_2MUL | OP_2DIV | OP_MUL | OP_DIV | OP_MOD | OP_LSHIFT | OP_RSHIFT => {
-                        return self.failop(ExecError::DisabledOpcode, op);
+                        return Err(ExecError::DisabledOpcode);
                     }
                     OP_RESERVED => {
-                        return self.failop(ExecError::Debug, op);
+                        return Err(ExecError::Debug);
                     }
 
                     _ => {}
@@ -180,7 +153,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                 if (exec || (op.to_u8() >= OP_IF.to_u8() && op.to_u8() <= OP_ENDIF.to_u8()))
                     && let Err(err) = self.exec_opcode(op)
                 {
-                    return self.failop(err, op);
+                    return Err(err);
                 }
             }
         }
@@ -221,7 +194,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                     // Tapscript requires minimal IF/NOTIF inputs as a consensus rule.
                     // The input argument to the OP_IF and OP_NOTIF opcodes must be either
                     // exactly 0 (the empty vector) or exactly 1 (the one-byte vector with value 1).
-                    if top.len() > 1 || (top.len() == 1 && top[0] != 1) {
+                    if top.len() > 1 || (top.len() == 1 && top.first().copied() != Some(1)) {
                         return Err(ExecError::TapscriptMinimalIf);
                     }
 
@@ -276,7 +249,7 @@ impl<'a, 'b> Exec<'a, 'b> {
             OP_2DROP => {
                 // (x1 x2 -- )
                 self.stack.needn(2)?;
-                self.stack.popn(2).unwrap();
+                self.stack.popn(2)?;
             }
 
             OP_2DUP => {
@@ -378,11 +351,8 @@ impl<'a, 'b> Exec<'a, 'b> {
                 // (xn ... x2 x1 x0 n - xn ... x2 x1 x0 xn)
                 // (xn ... x2 x1 x0 n - ... x2 x1 x0 xn)
                 let x = self.stack.topnum(-1)?;
-                if x < 0 || x >= self.stack.len() as i64 {
-                    return Err(ExecError::InvalidStackOperation);
-                }
                 self.stack.pop()?;
-                let elem = self.stack.top(-x as isize - 1).unwrap().clone();
+                let elem = self.stack.top(-x as isize - 1)?.clone();
                 if op == OP_ROLL {
                     self.stack.remove(self.stack.len() - x as usize - 1);
                 }
@@ -432,8 +402,8 @@ impl<'a, 'b> Exec<'a, 'b> {
             OP_EQUAL | OP_EQUALVERIFY => {
                 // (x1 x2 - bool)
                 self.stack.needn(2)?;
-                let x2 = self.stack.popstr().unwrap();
-                let x1 = self.stack.popstr().unwrap();
+                let x2 = self.stack.popstr()?;
+                let x1 = self.stack.popstr()?;
                 let equal = x1 == x2;
                 if op == OP_EQUALVERIFY && !equal {
                     return Err(ExecError::EqualVerify);
@@ -505,7 +475,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                 if op == OP_NUMEQUALVERIFY && res == 0 {
                     return Err(ExecError::NumEqualVerify);
                 }
-                self.stack.popn(2).unwrap();
+                self.stack.popn(2)?;
                 if op != OP_NUMEQUALVERIFY {
                     self.stack.pushnum(res);
                 }
@@ -516,7 +486,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                 let x1 = self.stack.topnum(-3)?;
                 let x2 = self.stack.topnum(-2)?;
                 let x3 = self.stack.topnum(-1)?;
-                self.stack.popn(3).unwrap();
+                self.stack.popn(3)?;
                 let res = x2 <= x1 && x1 < x3;
                 let item = if res { 1 } else { 0 };
                 self.stack.pushnum(item);
@@ -560,7 +530,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                 let sig = self.stack.topstr(-2)?.clone();
                 let pk = self.stack.topstr(-1)?.clone();
                 let res = self.verify_transaction_signature(&sig, &pk)?;
-                self.stack.popn(2).unwrap();
+                self.stack.popn(2)?;
                 if op == OP_CHECKSIGVERIFY && !res {
                     return Err(ExecError::CheckSigVerify);
                 }
@@ -575,7 +545,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                 let mut n = self.stack.topnum(-2)?;
                 let pk = self.stack.topstr(-1)?.clone();
                 let res = self.verify_transaction_signature(&sig, &pk)?;
-                self.stack.popn(3).unwrap();
+                self.stack.popn(3)?;
                 if res {
                     n += 1;
                 }
@@ -595,32 +565,6 @@ impl<'a, 'b> Exec<'a, 'b> {
         }
 
         Ok(())
-    }
-
-    ///////////////
-    // UTILITIES //
-    ///////////////
-
-    fn fail(&mut self, err: ExecError) -> Result<(), &ExecutionResult> {
-        let res = ExecutionResult {
-            success: false,
-            error: Some(err),
-            opcode: None,
-            final_stack: self.stack.clone(),
-        };
-        self.result = Some(res);
-        Err(self.result.as_ref().unwrap())
-    }
-
-    fn failop(&mut self, err: ExecError, op: Opcode) -> Result<(), &ExecutionResult> {
-        let res = ExecutionResult {
-            success: false,
-            error: Some(err),
-            opcode: Some(op),
-            final_stack: self.stack.clone(),
-        };
-        self.result = Some(res);
-        Err(self.result.as_ref().unwrap())
     }
 }
 
@@ -658,6 +602,7 @@ pub fn read_scriptint_size(v: &[u8], max_size: usize) -> Result<i64, script::Err
             // it would conflict with the sign bit. An example of this case
             // is +-255, which encode to 0xff00 and 0xff80 respectively.
             // (big-endian).
+            #[allow(clippy::indexing_slicing)]
             if v.len() <= 1 || (v[v.len() - 2] & 0x80) == 0 {
                 return Err(script::Error::NonMinimalPush);
             }
@@ -667,12 +612,12 @@ pub fn read_scriptint_size(v: &[u8], max_size: usize) -> Result<i64, script::Err
     Ok(scriptint_parse(v))
 }
 
-/// Caller to guarantee that `v` is not empty.
 fn scriptint_parse(v: &[u8]) -> i64 {
     let (mut ret, sh) = v
         .iter()
         .fold((0, 0), |(acc, sh), n| (acc + ((*n as i64) << sh), sh + 8));
-    if v[v.len() - 1] & 0x80 != 0 {
+
+    if v.last().copied().unwrap_or_default() & 0x80 != 0 {
         ret &= (1 << (sh - 1)) - 1;
         ret = -ret;
     }
@@ -680,6 +625,7 @@ fn scriptint_parse(v: &[u8]) -> i64 {
 }
 
 pub(crate) fn read_scriptint(item: &[u8], size: usize) -> Result<i64, ExecError> {
+    #[allow(clippy::wildcard_enum_match_arm)]
     read_scriptint_size(item, size).map_err(|e| match e {
         script::Error::NonMinimalPush => ExecError::MinimalData,
         // only possible if size is 4 or lower

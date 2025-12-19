@@ -22,7 +22,7 @@ impl<'a, 'b> Exec<'a, 'b> {
         let success = self.verify_signature(&sig, &pk, msg)?;
 
         // BIP 348 requires popping the 3 elements
-        self.stack.popn(3).unwrap();
+        self.stack.popn(3)?;
 
         if success {
             self.stack.pushnum(1);

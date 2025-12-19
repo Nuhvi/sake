@@ -1,3 +1,32 @@
+//! SAKE Script Army Knife Emulation
+
+#![deny(
+    // missing_docs, 
+    unused_must_use
+)]
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(
+    clippy::panic,
+    clippy::unwrap_used,
+    // clippy::expect_used,
+    clippy::await_holding_lock,
+    clippy::indexing_slicing,
+    clippy::await_holding_refcell_ref,
+    clippy::fallible_impl_from,
+    clippy::wildcard_enum_match_arm,
+    clippy::unneeded_field_pattern,
+    clippy::fn_params_excessive_bools
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
+
 use bitcoin::{
     ScriptBuf, Transaction, TxOut,
     hashes::Hash,
@@ -142,17 +171,15 @@ fn validate_with_sighashcache<'a>(
         loop {
             match exec.exec_next() {
                 Ok(_) => continue,
-                Err(exec_result) => {
-                    if let Some(err) = &exec_result.error {
-                        //  TODO: log stack
+                Err(exec::ExecError::Done(true)) => break,
+                Err(exec::ExecError::Done(false)) => {
+                    return Err(Error::ScriptVerificationFailed { input: *input_idx });
+                }
+                Err(err) => {
+                    //  TODO: log stack
 
-                        // Return execution error
-                        return Err(Error::Exec(err.clone()));
-                    } else if !exec_result.success {
-                        return Err(Error::ScriptVerificationFailed(inputs.first().unwrap().0));
-                    }
-
-                    break; // Script finished successfully
+                    // Return execution error
+                    return Err(Error::Exec(err));
                 }
             }
         }

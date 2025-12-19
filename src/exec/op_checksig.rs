@@ -15,17 +15,18 @@ impl<'a, 'b> Exec<'a, 'b> {
         sig: &[u8],
         pk: &[u8],
     ) -> Result<bool, ExecError> {
-        let (sig, sighash_type) = if sig.len() == 65 {
-            let b = *sig.last().unwrap();
-            let sig = &sig[0..sig.len() - 1];
+        let (sig, sighash_type) = if let Some((sighash_type_byte, sig)) = sig.split_last()
+            && sig.len() == 64
+        {
+            //TODO(stevenroose) core does not error here
+            let sighash_type = TapSighashType::from_consensus_u8(*sighash_type_byte)
+                .map_err(|_| ExecError::SchnorrSigHashtype)?;
 
-            if b == TapSighashType::Default as u8 {
+            if sighash_type == TapSighashType::Default {
                 return Err(ExecError::SchnorrSigHashtype);
             }
-            //TODO(stevenroose) core does not error here
-            let sht =
-                TapSighashType::from_consensus_u8(b).map_err(|_| ExecError::SchnorrSigHashtype)?;
-            (sig, sht)
+
+            (sig, sighash_type)
         } else {
             (sig, TapSighashType::Default)
         };
@@ -93,7 +94,10 @@ impl<'a, 'b> Exec<'a, 'b> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{exec::Exec, tests::validate_single_script};
+    use crate::{
+        exec::{Exec, ExecError},
+        tests::validate_single_script,
+    };
 
     use bitcoin::{
         Amount, TapLeafHash, TapSighashType, Transaction, TxOut,
@@ -228,8 +232,8 @@ mod tests {
         loop {
             match exec.exec_next() {
                 Ok(_) => continue,
-                Err(exec_result) => {
-                    assert!(exec_result.success);
+                Err(err) => {
+                    assert_eq!(err, ExecError::Done(true));
                     break;
                 }
             }
