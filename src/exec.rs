@@ -230,7 +230,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                     } else {
                         script::read_scriptbool(&top)
                     };
-                    self.stack.pop().unwrap();
+                    self.stack.pop()?;
                     self.cond_stack.push(b);
                 } else {
                     self.cond_stack.push(false);
@@ -255,7 +255,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                 if !script::read_scriptbool(&top) {
                     return Err(ExecError::Verify);
                 } else {
-                    self.stack.pop().unwrap();
+                    self.stack.pop()?;
                 }
             }
 
@@ -264,15 +264,12 @@ impl<'a, 'b> Exec<'a, 'b> {
             //
             // Stack operations
             OP_TOALTSTACK => {
-                let top = self.stack.pop().ok_or(ExecError::InvalidStackOperation)?;
+                let top = self.stack.pop()?;
                 self.altstack.push(top);
             }
 
             OP_FROMALTSTACK => {
-                let top = self
-                    .altstack
-                    .pop()
-                    .ok_or(ExecError::InvalidStackOperation)?;
+                let top = self.altstack.pop()?;
                 self.stack.push(top);
             }
 
@@ -312,12 +309,12 @@ impl<'a, 'b> Exec<'a, 'b> {
             OP_2ROT => {
                 // (x1 x2 x3 x4 x5 x6 -- x3 x4 x5 x6 x1 x2)
                 self.stack.needn(6)?;
-                let x6 = self.stack.pop().unwrap();
-                let x5 = self.stack.pop().unwrap();
-                let x4 = self.stack.pop().unwrap();
-                let x3 = self.stack.pop().unwrap();
-                let x2 = self.stack.pop().unwrap();
-                let x1 = self.stack.pop().unwrap();
+                let x6 = self.stack.pop()?;
+                let x5 = self.stack.pop()?;
+                let x4 = self.stack.pop()?;
+                let x3 = self.stack.pop()?;
+                let x2 = self.stack.pop()?;
+                let x1 = self.stack.pop()?;
                 self.stack.push(x3);
                 self.stack.push(x4);
                 self.stack.push(x5);
@@ -329,10 +326,10 @@ impl<'a, 'b> Exec<'a, 'b> {
             OP_2SWAP => {
                 // (x1 x2 x3 x4 -- x3 x4 x1 x2)
                 self.stack.needn(4)?;
-                let x4 = self.stack.pop().unwrap();
-                let x3 = self.stack.pop().unwrap();
-                let x2 = self.stack.pop().unwrap();
-                let x1 = self.stack.pop().unwrap();
+                let x4 = self.stack.pop()?;
+                let x3 = self.stack.pop()?;
+                let x2 = self.stack.pop()?;
+                let x1 = self.stack.pop()?;
                 self.stack.push(x3);
                 self.stack.push(x4);
                 self.stack.push(x1);
@@ -354,9 +351,7 @@ impl<'a, 'b> Exec<'a, 'b> {
 
             OP_DROP => {
                 // (x -- )
-                if self.stack.pop().is_none() {
-                    return Err(ExecError::InvalidStackOperation);
-                }
+                self.stack.pop()?;
             }
 
             OP_DUP => {
@@ -368,8 +363,8 @@ impl<'a, 'b> Exec<'a, 'b> {
             OP_NIP => {
                 // (x1 x2 -- x2)
                 self.stack.needn(2)?;
-                let x2 = self.stack.pop().unwrap();
-                self.stack.pop().unwrap();
+                let x2 = self.stack.pop()?;
+                self.stack.pop()?;
                 self.stack.push(x2);
             }
 
@@ -386,7 +381,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                 if x < 0 || x >= self.stack.len() as i64 {
                     return Err(ExecError::InvalidStackOperation);
                 }
-                self.stack.pop().unwrap();
+                self.stack.pop()?;
                 let elem = self.stack.top(-x as isize - 1).unwrap().clone();
                 if op == OP_ROLL {
                     self.stack.remove(self.stack.len() - x as usize - 1);
@@ -397,9 +392,9 @@ impl<'a, 'b> Exec<'a, 'b> {
             OP_ROT => {
                 // (x1 x2 x3 -- x2 x3 x1)
                 self.stack.needn(3)?;
-                let x3 = self.stack.pop().unwrap();
-                let x2 = self.stack.pop().unwrap();
-                let x1 = self.stack.pop().unwrap();
+                let x3 = self.stack.pop()?;
+                let x2 = self.stack.pop()?;
+                let x1 = self.stack.pop()?;
                 self.stack.push(x2);
                 self.stack.push(x3);
                 self.stack.push(x1);
@@ -408,8 +403,8 @@ impl<'a, 'b> Exec<'a, 'b> {
             OP_SWAP => {
                 // (x1 x2 -- x2 x1)
                 self.stack.needn(2)?;
-                let x2 = self.stack.pop().unwrap();
-                let x1 = self.stack.pop().unwrap();
+                let x2 = self.stack.pop()?;
+                let x1 = self.stack.pop()?;
                 self.stack.push(x2);
                 self.stack.push(x1);
             }
@@ -417,8 +412,8 @@ impl<'a, 'b> Exec<'a, 'b> {
             OP_TUCK => {
                 // (x1 x2 -- x2 x1 x2)
                 self.stack.needn(2)?;
-                let x2 = self.stack.pop().unwrap();
-                let x1 = self.stack.pop().unwrap();
+                let x2 = self.stack.pop()?;
+                let x1 = self.stack.pop()?;
                 self.stack.push(x2.clone());
                 self.stack.push(x1);
                 self.stack.push(x2);
@@ -467,7 +462,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                     OP_0NOTEQUAL => (x != 0) as i64,
                     _ => unreachable!(),
                 };
-                self.stack.pop().unwrap();
+                self.stack.pop()?;
                 self.stack.pushnum(res);
             }
 

@@ -5,6 +5,8 @@ use std::rc::Rc;
 
 use crate::exec::{ExecError, read_scriptint};
 
+// TODO: pop return an error instead of None
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StackEntry {
     Num(i64),
@@ -106,8 +108,8 @@ impl Stack {
         Ok(())
     }
 
-    pub fn pop(&mut self) -> Option<StackEntry> {
-        self.0.pop()
+    pub fn pop(&mut self) -> Result<StackEntry, ExecError> {
+        self.0.pop().ok_or(ExecError::InvalidStackOperation)
     }
 
     pub fn popstr(&mut self) -> Result<Vec<u8>, ExecError> {
