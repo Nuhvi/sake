@@ -12,6 +12,8 @@ use bitcoin::transaction::{Transaction, TxOut};
 pub use crate::error::{Error, ExecError};
 pub use crate::stack::{ConditionStack, Stack};
 
+mod sake_opcodes;
+
 /// Maximum number of bytes pushable to the stack
 const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
 
@@ -68,8 +70,6 @@ pub struct Exec<'a, 'b> {
 
     secp: secp256k1::Secp256k1<secp256k1::All>,
 }
-
-// No Drop impl needed anymore!
 
 impl<'a, 'b> Exec<'a, 'b> {
     pub fn new(
@@ -221,14 +221,17 @@ impl<'a, 'b> Exec<'a, 'b> {
                 self.stack.pushnum((n as i64) - 1);
             }
 
-            //
-            // Control
             // OP_CTLV and OP_CSV are noop
             OP_NOP | OP_NOP1 | OP_CLTV | OP_CSV | OP_NOP4 | OP_NOP5 | OP_NOP6 | OP_NOP7
             | OP_NOP8 | OP_NOP9 | OP_NOP10 => {
                 // nops
             }
 
+            // OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
+            // OP_CHECKSIGFROMSTACK => self.handle_op_checksigfromstack()?,
+
+            //
+            // Control
             OP_IF | OP_NOTIF => {
                 if exec {
                     let top = self.stack.topstr(-1)?;
@@ -439,17 +442,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                 self.stack.push(x2);
             }
 
-            OP_CAT => {
-                // (x1 x2 -- x1|x2)
-                self.stack.needn(2)?;
-                let x2 = self.stack.popstr().unwrap();
-                let x1 = self.stack.popstr().unwrap();
-                let ret: Vec<u8> = x1.into_iter().chain(x2).collect();
-                if ret.len() > MAX_SCRIPT_ELEMENT_SIZE {
-                    return Err(ExecError::PushSize);
-                }
-                self.stack.pushstr(&ret);
-            }
+            OP_CAT => self.handle_op_cat()?,
 
             OP_SIZE => {
                 // (in -- in size)
