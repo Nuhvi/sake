@@ -41,7 +41,11 @@ impl<'a, 'b> Exec<'a, 'b> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::{mock_signed_message, validate_single_script};
+    use crate::{
+        Error,
+        exec::ExecError,
+        tests::{mock_signed_message, validate_single_script},
+    };
 
     use bitcoin::key::Secp256k1;
 
@@ -97,7 +101,11 @@ mod tests {
 
         let res = validate_single_script(script, witness);
 
-        assert!(res.is_err(), "PK size 0 must fail script");
+        assert_eq!(
+            res,
+            Err(Error::Exec(ExecError::PubkeyType)),
+            "PK size 0 must fail script"
+        );
     }
 
     #[test]
@@ -113,8 +121,10 @@ mod tests {
         ];
 
         let res = validate_single_script(script, witness);
-        assert!(
-            res.is_err(),
+
+        assert_eq!(
+            res,
+            Err(Error::Exec(ExecError::SchnorrSig)),
             "Invalid non-empty signature must terminate with error"
         );
     }

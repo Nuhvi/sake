@@ -41,7 +41,6 @@ mod tests {
             OP_EQUALVERIFY
 
             // Test OP_CHECKSIGFROMSTACK
-
             { sig.to_vec() }
             { msg.to_vec() }
             { pk.to_vec() }

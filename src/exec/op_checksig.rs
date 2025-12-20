@@ -93,6 +93,7 @@ impl<'a, 'b> Exec<'a, 'b> {
 #[cfg(test)]
 mod tests {
     use crate::{
+        Error,
         exec::{Exec, ExecError},
         tests::validate_single_script,
     };
@@ -100,21 +101,22 @@ mod tests {
     use bitcoin::{
         Amount, TapLeafHash, TapSighashType, Transaction, TxOut,
         key::{Keypair, Secp256k1},
-        opcodes::all::{OP_CHECKSIG, OP_EQUALVERIFY},
-        script,
         secp256k1::{self},
         sighash::{Prevouts, SighashCache},
         taproot::LeafVersion,
     };
 
+    use bitcoin_script::script;
+
     #[test]
     fn test_op_checksig_unknown_key_type_succeeds() {
-        let script = script::Builder::new()
-            .push_opcode(OP_CHECKSIG)
-            .push_int(1)
-            .push_opcode(OP_EQUALVERIFY)
-            .push_int(1)
-            .into_script();
+        let script = script! {
+            OP_CHECKSIG
+            { 1 }
+            OP_EQUALVERIFY
+            { 1 }
+        }
+        .compile();
         let witness = vec![
             vec![0x01; 64], // Non-empty Sig
             vec![0xAA; 33], // Unknown PK type (33 bytes)
@@ -125,12 +127,13 @@ mod tests {
 
     #[test]
     fn test_op_checksig_empty_sig_pushes_zero() {
-        let script = script::Builder::new()
-            .push_opcode(OP_CHECKSIG)
-            .push_int(0)
-            .push_opcode(OP_EQUALVERIFY)
-            .push_int(1)
-            .into_script();
+        let script = script! {
+            OP_CHECKSIG
+            { 0 }
+            OP_EQUALVERIFY
+            { 1 }
+        }
+        .compile();
         let witness = vec![
             vec![],         // EMPTY SIG
             vec![0x01; 32], // PK
@@ -141,9 +144,10 @@ mod tests {
 
     #[test]
     fn test_op_checksig_pk_size_zero_fails() {
-        let script = script::Builder::new()
-            .push_opcode(OP_CHECKSIG)
-            .into_script();
+        let script = script! {
+            OP_CHECKSIG
+        }
+        .compile();
         let witness = vec![
             vec![0x01; 64],
             vec![0x00; 32],
@@ -152,22 +156,28 @@ mod tests {
 
         let res = validate_single_script(script, witness);
 
-        assert!(res.is_err(), "PK size 0 must fail script");
+        assert_eq!(
+            res,
+            Err(Error::Exec(ExecError::PubkeyType)),
+            "PK size 0 must fail script"
+        );
     }
 
     #[test]
     fn test_op_checksig_invalid_sig_hard_fail() {
-        let script = script::Builder::new()
-            .push_opcode(OP_CHECKSIG)
-            .into_script();
+        let script = script! {
+            OP_CHECKSIG
+        }
+        .compile();
         let witness = vec![
             vec![0xff; 64], // Invalid but non-empty sig
             vec![0x01; 32],
         ];
 
         let res = validate_single_script(script, witness);
-        assert!(
-            res.is_err(),
+        assert_eq!(
+            res,
+            Err(Error::Exec(ExecError::SchnorrSig)),
             "Invalid non-empty signature must terminate with error"
         );
     }
@@ -176,10 +186,11 @@ mod tests {
     fn test_op_checksig_valid_sig_succeeds() {
         let secp = Secp256k1::new();
         let keypair = Keypair::new(&secp, &mut secp256k1::rand::thread_rng());
-        let (x_only_pk, _) = keypair.x_only_public_key();
+        let pk = keypair.x_only_public_key().0;
 
         // 1. Define the script
-        let script = bitcoin_script::script! {
+        let script = script! {
+            { pk }
             OP_CHECKSIG
             { 1 }
             OP_EQUALVERIFY
@@ -219,7 +230,7 @@ mod tests {
 
         // 4. Construct Witness: <sig> <pk>
         // Note: sig is 64 bytes (Default sighash), pk is 32 bytes
-        let witness = vec![sig.as_ref().to_vec(), x_only_pk.serialize().to_vec()];
+        let witness = vec![sig.as_ref().to_vec()];
 
         // Validate
 
