@@ -36,21 +36,21 @@ impl<'a, 'b> Exec<'a, 'b> {
 
 #[cfg(test)]
 mod tests {
-    // TODO: support OP_CHECKSIGFROMSTACK in bitcoin_script
-
     use crate::tests::validate_single_script;
 
-    use super::*;
-    use bitcoin::{key::Secp256k1, opcodes::all::OP_EQUALVERIFY, script, secp256k1};
+    use bitcoin::{key::Secp256k1, secp256k1};
+
+    use bitcoin_script::script;
 
     #[test]
     fn test_op_csfs_unknown_key_type_succeeds() {
-        let script = script::Builder::new()
-            .push_opcode(OP_CHECKSIGFROMSTACK)
-            .push_int(1)
-            .push_opcode(OP_EQUALVERIFY)
-            .push_int(1)
-            .into_script();
+        let script = script! {
+            OP_CHECKSIGFROMSTACK
+            { 1 }
+            OP_EQUALVERIFY
+            { 1 }
+        }
+        .compile();
         let witness = vec![
             vec![0x01; 64], // Non-empty Sig
             vec![0x00; 32], // Msg
@@ -62,12 +62,13 @@ mod tests {
 
     #[test]
     fn test_op_csfs_empty_sig_pushes_zero() {
-        let script = script::Builder::new()
-            .push_opcode(OP_CHECKSIGFROMSTACK)
-            .push_int(0)
-            .push_opcode(OP_EQUALVERIFY)
-            .push_int(1)
-            .into_script();
+        let script = script! {
+            OP_CHECKSIGFROMSTACK
+            { 0 }
+            OP_EQUALVERIFY
+            { 1 }
+        }
+        .compile();
         let witness = vec![
             vec![],         // EMPTY SIG
             vec![0x00; 32], // Msg
@@ -79,9 +80,10 @@ mod tests {
 
     #[test]
     fn test_op_csfs_pk_size_zero_fails() {
-        let script = script::Builder::new()
-            .push_opcode(OP_CHECKSIGFROMSTACK)
-            .into_script();
+        let script = script! {
+            OP_CHECKSIGFROMSTACK
+        }
+        .compile();
         let witness = vec![
             vec![0x01; 64],
             vec![0x00; 32],
@@ -95,9 +97,10 @@ mod tests {
 
     #[test]
     fn test_op_csfs_invalid_sig_hard_fail() {
-        let script = script::Builder::new()
-            .push_opcode(OP_CHECKSIGFROMSTACK)
-            .into_script();
+        let script = script! {
+            OP_CHECKSIGFROMSTACK
+        }
+        .compile();
         let witness = vec![
             vec![0xff; 64], // Invalid but non-empty sig
             vec![0x00; 32],
@@ -124,12 +127,13 @@ mod tests {
         let msg = secp256k1::Message::from_digest_slice(&msg_bytes).unwrap();
         let sig = secp.sign_schnorr(&msg, &keypair);
 
-        let script = script::Builder::new()
-            .push_opcode(OP_CHECKSIGFROMSTACK)
-            .push_int(1)
-            .push_opcode(OP_EQUALVERIFY)
-            .push_int(1)
-            .into_script();
+        let script = script! {
+            OP_CHECKSIGFROMSTACK
+            { 1 }
+            OP_EQUALVERIFY
+            { 1 }
+        }
+        .compile();
 
         let witness = vec![
             sig.as_ref().to_vec(),          // <sig>
