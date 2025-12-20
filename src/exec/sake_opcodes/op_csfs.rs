@@ -8,6 +8,11 @@ use crate::{Exec, exec::ExecError};
 
 impl<'a, 'b> Exec<'a, 'b> {
     pub(crate) fn handle_op_csfs(&mut self) -> Result<(), ExecError> {
+        // Nop
+        if !self.supports_sake {
+            return Ok(());
+        }
+
         // Stack: <sig> <msg> <pubkey> (Top is pubkey)
         let pk = self.stack.topstr(-1)?;
         let msg_bytes = self.stack.topstr(-2)?;
@@ -36,9 +41,9 @@ impl<'a, 'b> Exec<'a, 'b> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::validate_single_script;
+    use crate::tests::{mock_signed_message, validate_single_script};
 
-    use bitcoin::{key::Secp256k1, secp256k1};
+    use bitcoin::key::Secp256k1;
 
     use bitcoin_script::script;
 
@@ -117,15 +122,7 @@ mod tests {
     #[test]
     fn test_op_csfs_valid_sig_succeeds() {
         let secp = Secp256k1::new();
-        // Generate a random keypair for the test
-        let mut rng = secp256k1::rand::thread_rng();
-        let keypair = secp256k1::Keypair::new(&secp, &mut rng);
-        let (x_only_pk, _) = keypair.x_only_public_key();
-
-        // BIP 348 requires a 32-byte message for the current BIP 340 implementation
-        let msg_bytes = [0x42u8; 32];
-        let msg = secp256k1::Message::from_digest_slice(&msg_bytes).unwrap();
-        let sig = secp.sign_schnorr(&msg, &keypair);
+        let (pk, msg, sig) = mock_signed_message(&secp);
 
         let script = script! {
             OP_CHECKSIGFROMSTACK
@@ -136,9 +133,9 @@ mod tests {
         .compile();
 
         let witness = vec![
-            sig.as_ref().to_vec(),          // <sig>
-            msg_bytes.to_vec(),             // <msg>
-            x_only_pk.serialize().to_vec(), // <pubkey>
+            sig.to_vec(), // <sig>
+            msg.to_vec(), // <msg>
+            pk.to_vec(),  // <pubkey>
         ];
 
         validate_single_script(script, witness).expect("Valid Schnorr signature should pass CSFS");

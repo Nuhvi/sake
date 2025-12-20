@@ -10,12 +10,14 @@ use bitcoin::taproot::{self, TapLeafHash};
 use bitcoin::transaction::{Transaction, TxOut};
 
 pub use crate::error::{Error, ExecError};
+use crate::exec::sake_opcodes::op_supportssake::OP_SAKESUPPORTED;
 pub use crate::stack::{ConditionStack, Stack};
 
 mod op_checksig;
 mod sake_opcodes {
     pub mod op_cat;
     pub mod op_csfs;
+    pub mod op_supportssake;
 }
 
 pub use sake_opcodes::op_csfs::OP_CHECKSIGFROMSTACK;
@@ -34,6 +36,8 @@ const VALIDATION_WEIGHT_PER_SIGOP_PASSED: i64 = 50;
 
 /// Partial execution of a script.
 pub struct Exec<'a, 'b> {
+    supports_sake: bool,
+
     prevouts: &'a [TxOut],
     input_idx: usize,
     leaf_hash: TapLeafHash,
@@ -53,12 +57,14 @@ pub struct Exec<'a, 'b> {
 }
 
 impl<'a, 'b> Exec<'a, 'b> {
-    pub fn new(
+    pub(crate) fn new(
         sighashcache: &'b mut SighashCache<&'a Transaction>,
         prevouts: &'a [TxOut],
         input_idx: usize,
         script: &'a Script,
         script_witness: Vec<Vec<u8>>,
+
+        supports_sake: bool,
     ) -> Result<Exec<'a, 'b>, Error> {
         // We want to make sure the script is valid so we don't have to throw parsing errors
         // while executing.
@@ -78,6 +84,8 @@ impl<'a, 'b> Exec<'a, 'b> {
         );
 
         Ok(Exec {
+            supports_sake,
+
             prevouts,
             input_idx,
             leaf_hash,
@@ -178,9 +186,11 @@ impl<'a, 'b> Exec<'a, 'b> {
 
             // OP_CTLV and OP_CSV are noop
             OP_NOP | OP_NOP1 | OP_CLTV | OP_CSV | OP_NOP4 | OP_NOP5 | OP_NOP6 | OP_NOP7
-            | OP_NOP8 | OP_NOP10 => {
+            | OP_NOP8 => {
                 // nops
             }
+
+            OP_SAKESUPPORTED => self.handle_op_supportssake()?,
 
             // OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
             OP_CHECKSIGFROMSTACK => self.handle_op_csfs()?,

@@ -62,7 +62,7 @@ pub fn validate(
     let last_output = tx.output.last();
     let mut sighashcache = SighashCache::new(tx);
 
-    validate_with_sighashcache(&mut sighashcache, last_output, prevouts, inputs)
+    validate_with_sighashcache(&mut sighashcache, last_output, prevouts, inputs, true)
 }
 
 /// Validates SAKE scripts in a transaction and return signatures over
@@ -104,7 +104,7 @@ pub fn validate_and_sign_with_secp(
     let last_output = tx.output.last();
     let mut sighashcache = SighashCache::new(tx);
 
-    validate_with_sighashcache(&mut sighashcache, last_output, prevouts, inputs)?;
+    validate_with_sighashcache(&mut sighashcache, last_output, prevouts, inputs, true)?;
 
     let mut signatures = Vec::with_capacity(inputs.len());
 
@@ -131,11 +131,31 @@ pub fn validate_and_sign_with_secp(
     Ok(signatures)
 }
 
+/// Validates scripts in a transaction with _NO_ support for SAKE scripts.
+///
+/// - `tx`: The transaction (used to calculate the sighash) and the last output contains the script witnesses as an OP_RETURN
+/// - `prevouts`: All the previous [TxOut]s for all the inputs (used to calculate the sighash).
+/// - `scripts` : Tuples of (`input index`, `ScriptBuf`) for the inputs to evaluate.
+///     - `input_index`: used in sighash calculation.
+///     - `ScriptBuf`: locking script for this input, evaluated with the respective script witness defcoded from the last [TxOut] (`OP_RETURN`) in the `tx`.
+pub fn validate_no_sake(
+    tx: &Transaction,
+    prevouts: &[TxOut],
+    inputs: &[(usize, ScriptBuf)],
+) -> Result<(), Error> {
+    let last_output = tx.output.last();
+    let mut sighashcache = SighashCache::new(tx);
+
+    validate_with_sighashcache(&mut sighashcache, last_output, prevouts, inputs, false)
+}
+
 fn validate_with_sighashcache<'a>(
     sighashcache: &mut SighashCache<&'a Transaction>,
     last_output: Option<&TxOut>,
     prevouts: &'a [TxOut],
     inputs: &'a [(usize, ScriptBuf)],
+
+    supports_sake: bool,
 ) -> Result<(), Error> {
     if inputs.is_empty() {
         return Ok(());
@@ -173,6 +193,7 @@ fn validate_with_sighashcache<'a>(
             *input_idx,
             script,
             witness_stack.clone(),
+            supports_sake,
         )?;
 
         loop {
@@ -198,11 +219,27 @@ fn validate_with_sighashcache<'a>(
 #[cfg(test)]
 mod tests {
 
-    use bitcoin::{ScriptBuf, Transaction, TxOut};
+    use bitcoin::{
+        ScriptBuf, Transaction, TxOut,
+        key::Secp256k1,
+        secp256k1::{self, All},
+    };
 
-    use crate::{Error, SakeWitnessCarrier, validate};
+    use crate::{Error, SakeWitnessCarrier, validate, validate_no_sake};
 
-    pub(crate) fn validate_single_script(
+    pub fn validate_single_script(script: ScriptBuf, witness: Vec<Vec<u8>>) -> Result<(), Error> {
+        let dummy_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![TxOut::sake_witness_carrier(&[(0, witness)])],
+        };
+        let prevouts = vec![];
+
+        validate(&dummy_tx, &prevouts, &[(0, script)])
+    }
+
+    pub fn validate_single_script_no_sake_support(
         script: ScriptBuf,
         witness: Vec<Vec<u8>>,
     ) -> Result<(), Error> {
@@ -214,6 +251,21 @@ mod tests {
         };
         let prevouts = vec![];
 
-        validate(&dummy_tx, &prevouts, &[(0, script)])
+        validate_no_sake(&dummy_tx, &prevouts, &[(0, script)])
+    }
+
+    /// Returns (pk, msg, sig) bytes
+    pub fn mock_signed_message(secp: &Secp256k1<All>) -> ([u8; 32], [u8; 32], [u8; 64]) {
+        // Generate a random keypair for the test
+        let mut rng = secp256k1::rand::thread_rng();
+        let keypair = secp256k1::Keypair::new(secp, &mut rng);
+        let pk = keypair.x_only_public_key().0;
+
+        // BIP 348 requires a 32-byte message for the current BIP 340 implementation
+        let msg_bytes = [0x42u8; 32];
+        let msg = secp256k1::Message::from_digest_slice(&msg_bytes).unwrap();
+        let sig = secp.sign_schnorr(&msg, &keypair);
+
+        (pk.serialize(), msg_bytes, sig.serialize())
     }
 }

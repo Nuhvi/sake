@@ -79,8 +79,6 @@ impl<'a, 'b> Exec<'a, 'b> {
             let sig = secp256k1::schnorr::Signature::from_slice(sig_bytes)
                 .map_err(|_| ExecError::SchnorrSigSize)?;
 
-            dbg!(&sig, &msg, &pk);
-            dbg!("HERE");
             self.secp
                 .verify_schnorr(&sig, &msg, &pk)
                 .map_err(|_| ExecError::SchnorrSig)?;
@@ -218,7 +216,6 @@ mod tests {
         // 3. Sign the sighash
         let msg = sighash.into();
         let sig = secp.sign_schnorr(&msg, &keypair);
-        dbg!(&sig, &msg, &keypair.x_only_public_key());
 
         // 4. Construct Witness: <sig> <pk>
         // Note: sig is 64 bytes (Default sighash), pk is 32 bytes
@@ -227,7 +224,7 @@ mod tests {
         // Validate
 
         let mut sighashcache = SighashCache::new(&tx);
-        let mut exec = Exec::new(&mut sighashcache, &prevouts, 0, &script, witness).unwrap();
+        let mut exec = Exec::new(&mut sighashcache, &prevouts, 0, &script, witness, true).unwrap();
 
         loop {
             match exec.exec_next() {

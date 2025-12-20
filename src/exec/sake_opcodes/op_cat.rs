@@ -4,6 +4,11 @@ use crate::{Exec, exec::ExecError};
 
 impl<'a, 'b> Exec<'a, 'b> {
     pub(crate) fn handle_op_cat(&mut self) -> Result<(), ExecError> {
+        // Nop
+        if !self.supports_sake {
+            return Ok(());
+        }
+
         // (x1 x2 -- x1|x2)
         self.stack.needn(2)?;
         let x2 = self.stack.popstr()?;
