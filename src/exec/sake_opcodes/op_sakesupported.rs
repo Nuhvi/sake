@@ -69,6 +69,12 @@ mod tests {
         let sake_script = sake_script();
 
         let script = script! {
+            // CTLV and CSV are OP_NOPs in the emulator.
+            // So they have to happen before the OP_IF
+            { 100 }
+            OP_CSV
+            OP_DROP
+
             OP_0
             OP_SAKESUPPORTED
             OP_IF
