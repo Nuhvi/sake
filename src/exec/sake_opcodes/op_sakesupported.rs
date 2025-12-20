@@ -47,6 +47,7 @@ mod tests {
             OP_CHECKSIGFROMSTACK
             { 1 }
             OP_EQUALVERIFY
+
             { 1 }
         }
     }
@@ -54,11 +55,7 @@ mod tests {
     #[test]
     fn test_op_sakesupported_fail() {
         let script = sake_script().compile();
-        let witness = vec![
-            vec![0x01; 64], // Non-empty Sig
-            vec![0x00; 32], // Msg
-            vec![0xAA; 33], // Unknown PK type (33 bytes)
-        ];
+        let witness = vec![];
 
         validate_single_script(script.clone(), witness.clone()).unwrap();
         assert!(validate_single_script_no_sake_support(script, witness).is_err());
@@ -88,11 +85,7 @@ mod tests {
         }
         .compile();
 
-        let witness = vec![
-            vec![0x01; 64], // Non-empty Sig
-            vec![0x00; 32], // Msg
-            vec![0xAA; 33], // Unknown PK type (33 bytes)
-        ];
+        let witness = vec![];
 
         validate_single_script(script.clone(), witness.clone()).unwrap();
         validate_single_script_no_sake_support(script, witness).unwrap();
