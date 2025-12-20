@@ -10,17 +10,17 @@ use bitcoin::taproot::{self, TapLeafHash};
 use bitcoin::transaction::{Transaction, TxOut};
 
 pub use crate::error::{Error, ExecError};
-use crate::exec::sake_opcodes::op_supportssake::OP_SAKESUPPORTED;
 pub use crate::stack::{ConditionStack, Stack};
 
 mod op_checksig;
 mod sake_opcodes {
     pub mod op_cat;
     pub mod op_csfs;
-    pub mod op_supportssake;
+    pub mod op_sakesupported;
 }
 
 pub use sake_opcodes::op_csfs::OP_CHECKSIGFROMSTACK;
+pub use sake_opcodes::op_sakesupported::OP_SAKESUPPORTED;
 
 /// Maximum number of bytes pushable to the stack
 const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;

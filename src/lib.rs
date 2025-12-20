@@ -45,7 +45,7 @@ use exec::Exec;
 pub use error::Error;
 pub use witness_carrier::SakeWitnessCarrier;
 
-pub use exec::OP_CHECKSIGFROMSTACK;
+pub use exec::{OP_CHECKSIGFROMSTACK, OP_SAKESUPPORTED};
 
 /// Validates SAKE scripts in a transaction.
 ///
