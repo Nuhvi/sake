@@ -241,7 +241,7 @@ mod tests {
             match exec.exec_next() {
                 Ok(_) => continue,
                 Err(err) => {
-                    assert_eq!(err, ExecError::Done(true));
+                    assert_eq!(err, ExecError::NoMoreInstructions { success: true });
                     break;
                 }
             }

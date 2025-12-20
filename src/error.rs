@@ -1,5 +1,7 @@
 use bitcoin::{blockdata::script, sighash::TaprootError};
 
+use crate::exec::Stack;
+
 /// Error of a script execution.
 ///
 /// Equivalent to Bitcoin Core's `ScriptError_t`.
@@ -35,7 +37,7 @@ pub enum ExecError {
     ScriptIntNumericOverflow,
     Debug,
 
-    Done(bool),
+    NoMoreInstructions { success: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +68,7 @@ pub enum Error {
     InvalidWitnessEncoding,
 
     /// Invalid Taproot witness program
-    ScriptVerificationFailed { input: usize },
+    ScriptVerificationFailed { input: usize, final_stack: Stack },
 
     /// Error signing inputs
     SigningError(TaprootError),

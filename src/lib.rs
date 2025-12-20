@@ -199,9 +199,12 @@ fn validate_with_sighashcache<'a>(
         loop {
             match exec.exec_next() {
                 Ok(_) => continue,
-                Err(exec::ExecError::Done(true)) => break,
-                Err(exec::ExecError::Done(false)) => {
-                    return Err(Error::ScriptVerificationFailed { input: *input_idx });
+                Err(exec::ExecError::NoMoreInstructions { success: true }) => break,
+                Err(exec::ExecError::NoMoreInstructions { success: false }) => {
+                    return Err(Error::ScriptVerificationFailed {
+                        input: *input_idx,
+                        final_stack: exec.stack,
+                    });
                 }
                 Err(err) => {
                     //  TODO: log stack

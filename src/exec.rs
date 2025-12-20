@@ -48,7 +48,7 @@ pub struct Exec<'a, 'b> {
     instruction_position: usize,
     current_position: usize,
     cond_stack: ConditionStack,
-    stack: Stack,
+    pub(crate) stack: Stack,
     altstack: Stack,
 
     validation_weight: i64,
@@ -122,13 +122,14 @@ impl<'a, 'b> Exec<'a, 'b> {
                 i
             }
             None => {
-                let success = self
-                    .stack
-                    .last()
-                    .ok()
-                    .map(|l| script::read_scriptbool(&l))
-                    .unwrap_or_default();
-                return Err(ExecError::Done(success));
+                let success = self.stack.len() == 1
+                    && self
+                        .stack
+                        .last()
+                        .ok()
+                        .map(|l| script::read_scriptbool(&l))
+                        .unwrap_or_default();
+                return Err(ExecError::NoMoreInstructions { success });
             }
             Some(Err(_)) => unreachable!("we checked the script beforehand"),
         };
