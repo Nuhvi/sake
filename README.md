@@ -15,7 +15,7 @@ let script = script!{
   OP_CSV
   OP_DROP
 
-  { flags::ALL } // A bitflag of all the features used in OP_IF
+  { flags::ALL } // A bitflag of all the features used in OP_IF (0000_0001 is disabled)
   OP_ACTIVATED   // Pushes 1 to the stack if all flags are supported, OP_NOP10 otherwise
   OP_1
   OP_EQUAL

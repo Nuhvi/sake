@@ -7,15 +7,15 @@ pub const OP_ACTIVATED: Opcode = OP_NOP10;
 use crate::{Exec, exec::ExecError};
 
 pub mod flags {
-    // 0000_0001 is disabled
+    // LSB (0000_0001) is disabled
 
-    pub const CAT: i64 = 0b0000_0010;
-    pub const CSFS: i64 = 0b0000_0100;
+    pub const CAT: u8 = 0b0000_0010;
+    pub const CSFS: u8 = 0b0000_0100;
 
-    pub const ALL: i64 = CAT | CSFS;
+    pub const ALL: u8 = CAT | CSFS;
 }
 
-const SUPPORTED_MASK: i64 = flags::ALL;
+const SUPPORTED_MASK: u8 = flags::ALL;
 
 impl<'a, 'b> Exec<'a, 'b> {
     pub(crate) fn handle_op_activated(&mut self) -> Result<(), ExecError> {
@@ -26,9 +26,11 @@ impl<'a, 'b> Exec<'a, 'b> {
 
         // TODO: support validation with specific flags enabled/disabled?
 
-        let bitflag = self.stack.popnum()?;
+        let bitflag = self.stack.popnum()? as u8;
+        // Ignore LSB because it is disabled
+        let bitflag = bitflag & 0b1111_1110;
 
-        self.stack.pushnum((bitflag & !SUPPORTED_MASK != 0) as i64);
+        self.stack.pushnum((bitflag & !SUPPORTED_MASK == 0) as i64);
 
         Ok(())
     }
@@ -71,7 +73,7 @@ mod tests {
     }
 
     #[test]
-    fn test_op_sakesupported_fail() {
+    fn test_op_activated_fail() {
         let script = sake_script().compile();
         let witness = vec![];
 
@@ -80,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn test_op_sakesupported_basic() {
+    fn test_op_activated_basic() {
         let sake_script = sake_script();
 
         let script = script! {
@@ -90,7 +92,7 @@ mod tests {
             OP_CSV
             OP_DROP
 
-            { flags::ALL }
+            { flags::ALL | 1 } // should ignore the LSB (0b0000_0001)
             OP_ACTIVATED
             OP_1
             OP_EQUAL
@@ -100,13 +102,12 @@ mod tests {
                 // In practice you would check oracles signatures here
                 // with OP_CHECKSIG or OP_CHECKSIGADD.
                 { 1 }
+                OP_EQUAL
             OP_ENDIF
         }
         .compile();
 
-        let witness = vec![];
-
-        validate_single_script(script.clone(), witness.clone()).unwrap();
-        validate_single_script_no_sake_support(script, witness).unwrap();
+        validate_single_script(script.clone(), vec![]).expect("valid sak emulation");
+        validate_single_script_no_sake_support(script, vec![vec![1]]).expect("valid legacy exec");
     }
 }
