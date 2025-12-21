@@ -7,8 +7,10 @@ pub const OP_ACTIVATED: Opcode = OP_NOP10;
 use crate::{Exec, exec::ExecError};
 
 pub mod flags {
-    pub const CAT: i64 = 0b0000_0001;
-    pub const CSFS: i64 = 0b0000_0010;
+    // 0000_0001 is disabled
+
+    pub const CAT: i64 = 0b0000_0010;
+    pub const CSFS: i64 = 0b0000_0100;
 
     pub const ALL: i64 = CAT | CSFS;
 }
