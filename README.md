@@ -20,8 +20,6 @@ let script = script!{
   OP_1
   OP_EQUAL
   OP_IF
-      OP_DROP // Remove the remaining OP_0
-
       // Emulate Script Army Knife Emulator
 
       // OP_CAT
@@ -32,20 +30,25 @@ let script = script!{
       OP_EQUALVERIFY
 
       // OP_CHECKSIGFROMSTACK (OP_NOP9)
-      { sig.to_vec() }
-      { msg.to_vec() }
-      { pk.to_vec() }
+      { signature }
+      { message }
+      { pubkey }
       OP_CHECKSIGFROMSTACK
       { 1 }
       OP_EQUALVERIFY
 
       { 1 }
   OP_ELSE
-      // Until a soft fork taking over by enabling OP_SAKESUPPORTED,
+      // Until a soft fork taking over using OP_ACTIVATED (OP_NOP10),
       // Use OP_CHECKSIG or OP_CHECKSIGADD to verify oracle signatures.
+      { oracle_1_pubkey }
       OP_CHECKSIG
-      { 1 }
-      OP_EQUALVERIFY
+      { oracle_2_pubkey }
+      OP_CHECKSIGADD
+      { oracle_3_pubkey }
+      OP_CHECKSIGADD
+      { 2 }
+      OP_GREATERTHANOREQUAL
 
       { 1 }
   OP_ENDIF
