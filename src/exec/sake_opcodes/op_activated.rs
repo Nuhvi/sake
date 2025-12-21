@@ -24,16 +24,9 @@ impl<'a, 'b> Exec<'a, 'b> {
 
         // TODO: support validation with specific flags enabled/disabled?
 
-        // Handle features flag if present (OP_0 preceded by a number)
-        if let Ok(flags) = self.stack.popnum()
-            && (flags & !SUPPORTED_MASK) != 0
-        {
-            // Some opcodes are not supported
-            // Act as nop
-            return Ok(());
-        }
+        let bitflag = self.stack.popnum()?;
 
-        self.stack.pushnum(1);
+        self.stack.pushnum((bitflag & !SUPPORTED_MASK != 0) as i64);
 
         Ok(())
     }
