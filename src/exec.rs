@@ -14,13 +14,15 @@ pub use crate::stack::{ConditionStack, Stack};
 
 mod op_checksig;
 mod sake_opcodes {
+    pub mod op_activated;
     pub mod op_cat;
     pub mod op_csfs;
-    pub mod op_sakesupported;
 }
 
-pub use sake_opcodes::op_csfs::OP_CHECKSIGFROMSTACK;
-pub use sake_opcodes::op_sakesupported::OP_SAKESUPPORTED;
+pub use sake_opcodes::{
+    op_activated::{OP_ACTIVATED, flags},
+    op_csfs::OP_CHECKSIGFROMSTACK,
+};
 
 /// Maximum number of bytes pushable to the stack
 const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
@@ -191,7 +193,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                 // nops
             }
 
-            OP_SAKESUPPORTED => self.handle_op_supportssake()?,
+            OP_ACTIVATED => self.handle_op_activated()?,
 
             // OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
             OP_CHECKSIGFROMSTACK => self.handle_op_csfs()?,

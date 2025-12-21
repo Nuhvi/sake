@@ -4,15 +4,21 @@ Script Army Knife Emulator
 ## How does it work
 
 ```rust
-script!{
+use bitcoin_script::script;
+
+use sake::flags;
+
+let script = script!{
   // CTLV and CSV are OP_NOPs in the emulator.
   // So they have to happen before the OP_IF
   { 100 } 
   OP_CSV
   OP_DROP
 
-  OP_0
-  OP_SAKESUPPORTED // OP_NOP10
+  { flags::ALL } // A bitflag of all the features used in OP_IF
+  OP_ACTIVATED   // Pushes 1 to the stack if all flags are supported, OP_NOP10 otherwise
+  OP_1
+  OP_EQUAL
   OP_IF
       OP_DROP // Remove the remaining OP_0
 
@@ -43,7 +49,7 @@ script!{
 
       { 1 }
   OP_ENDIF
-};
+}.compile();
 ```
 
 ## Limitations

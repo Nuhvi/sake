@@ -2,14 +2,34 @@
 
 use bitcoin::{Opcode, opcodes::all::OP_NOP10};
 
-pub const OP_SAKESUPPORTED: Opcode = OP_NOP10;
+pub const OP_ACTIVATED: Opcode = OP_NOP10;
 
 use crate::{Exec, exec::ExecError};
 
+pub mod flags {
+    pub const CAT: i64 = 0b0000_0001;
+    pub const CSFS: i64 = 0b0000_0010;
+
+    pub const ALL: i64 = CAT | CSFS;
+}
+
+const SUPPORTED_MASK: i64 = flags::ALL;
+
 impl<'a, 'b> Exec<'a, 'b> {
-    pub(crate) fn handle_op_supportssake(&mut self) -> Result<(), ExecError> {
+    pub(crate) fn handle_op_activated(&mut self) -> Result<(), ExecError> {
         // Nop
         if !self.supports_sake {
+            return Ok(());
+        }
+
+        // TODO: support validation with specific flags enabled/disabled?
+
+        // Handle features flag if present (OP_0 preceded by a number)
+        if let Ok(flags) = self.stack.popnum()
+            && (flags & !SUPPORTED_MASK) != 0
+        {
+            // Some opcodes are not supported
+            // Act as nop
             return Ok(());
         }
 
@@ -24,8 +44,11 @@ mod tests {
     use bitcoin::key::Secp256k1;
     use bitcoin_script::{Script, script};
 
-    use crate::tests::{
-        mock_signed_message, validate_single_script, validate_single_script_no_sake_support,
+    use crate::{
+        flags,
+        tests::{
+            mock_signed_message, validate_single_script, validate_single_script_no_sake_support,
+        },
     };
 
     fn sake_script() -> Script {
@@ -72,10 +95,11 @@ mod tests {
             OP_CSV
             OP_DROP
 
-            OP_0
-            OP_SAKESUPPORTED
+            { flags::ALL }
+            OP_ACTIVATED
+            OP_1
+            OP_EQUAL
             OP_IF
-                OP_DROP // Remove the remaining OP_0
                 { sake_script } // Emulate a SAKE script with SAKE opcodes
             OP_ELSE
                 // In practice you would check oracles signatures here
