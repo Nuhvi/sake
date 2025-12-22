@@ -45,7 +45,7 @@ use exec::Exec;
 pub use error::Error;
 pub use witness_carrier::SakeWitnessCarrier;
 
-pub use exec::{OP_ACTIVATED, OP_CHECKSIGFROMSTACK, flags};
+pub use exec::OP_CHECKSIGFROMSTACK;
 
 /// Validates SAKE scripts in a transaction.
 ///
@@ -223,12 +223,16 @@ fn validate_with_sighashcache<'a>(
 mod tests {
 
     use bitcoin::{
-        ScriptBuf, Transaction, TxOut, XOnlyPublicKey,
-        key::Secp256k1,
-        secp256k1::{self, All},
+        Amount, ScriptBuf, Transaction, TxOut, XOnlyPublicKey,
+        hashes::Hash,
+        key::{Keypair, Secp256k1},
+        secp256k1::{self, All, Message},
+        sighash::{Prevouts, SighashCache},
     };
 
-    use crate::{Error, SakeWitnessCarrier, validate, validate_no_sake};
+    use bitcoin_script::{Script, script};
+
+    use crate::{Error, SakeWitnessCarrier, validate, validate_and_sign, validate_no_sake};
 
     pub fn validate_single_script(script: ScriptBuf, witness: Vec<Vec<u8>>) -> Result<(), Error> {
         let dummy_tx = Transaction {
@@ -270,5 +274,143 @@ mod tests {
         let sig = secp.sign_schnorr(&msg, &keypair);
 
         (pk, msg_bytes, sig.serialize())
+    }
+
+    fn sake_script(pk: XOnlyPublicKey) -> Script {
+        script! {
+            // Test OP_CAT
+            { b"world".to_vec() }
+            OP_CAT
+            { b"hello world".to_vec() }
+            OP_EQUALVERIFY
+
+            // Test OP_CHECKSIGFROMSTACK
+            { pk }
+            OP_CHECKSIGFROMSTACK
+            { 1 }
+            OP_EQUALVERIFY
+
+            { 1 }
+        }
+    }
+
+    #[test]
+    fn test_op_activated_fail() {
+        let secp = Secp256k1::new();
+
+        let (pk, msg, sig) = mock_signed_message(&secp);
+
+        let script = sake_script(pk).compile();
+        let witness = vec![sig.to_vec(), msg.to_vec(), b"hello ".to_vec()];
+
+        validate_single_script(script.clone(), witness.clone()).unwrap();
+        assert!(validate_single_script_no_sake_support(script, witness).is_err());
+    }
+
+    #[test]
+    fn test_op_activated_basic() {
+        let secp = Secp256k1::new();
+        let (pk, msg, sig) = mock_signed_message(&secp);
+
+        let sake_script = sake_script(pk);
+
+        let script = script! {
+            // CTLV and CSV are OP_NOPs in the emulator.
+            // So they have to happen before the OP_IF
+            { 100 }
+            OP_CSV
+            OP_DROP
+
+            OP_IF
+                { sake_script } // Emulate a SAKE script with SAKE opcodes
+            OP_ELSE
+                // In practice you would check oracles signatures here
+                // with OP_CHECKSIG or OP_CHECKSIGADD.
+                { b"legacy".to_vec() }
+                OP_EQUAL
+            OP_ENDIF
+        }
+        .compile();
+
+        //  Enable SAKE script by passing an OP_1
+        validate_single_script(
+            script.clone(),
+            vec![sig.to_vec(), msg.to_vec(), b"hello ".to_vec(), vec![1]],
+        )
+        .expect("valid sak emulation");
+
+        // Disable SAKE script by passing an OP_0 (empty)
+        validate_single_script_no_sake_support(script, vec![b"legacy".to_vec(), vec![]])
+            .expect("valid legacy exec");
+    }
+    #[test]
+    fn test_validate_and_sign_success() {
+        // Sign the first and last inputs
+        let scripts = vec![
+            // Input 0: Script that passes if witness is 1
+            (0, script! { OP_IF { 1 } OP_ELSE { 0 } OP_ENDIF }.compile()),
+            // Input 2: Script that passes if witness is 0
+            (2, script! { OP_IF { 0 } OP_ELSE { 1 } OP_ENDIF }.compile()),
+        ];
+
+        // Witness stacks encoded in witness carrier
+        let witness_carrier = TxOut::sake_witness_carrier(&[
+            (0, vec![vec![1]]), // Ipnut 0 witness stack: [ OP_1 ]
+            (2, vec![vec![]]),  // Ipnut 2 witness stack: [ OP_0 ]
+        ]);
+
+        // MUST have at least 2 inputs because we are signing input 0 and 1
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default(), Default::default(), Default::default()],
+            output: vec![witness_carrier],
+        };
+
+        let secp = Secp256k1::new();
+
+        let secret_key = [0x42; 32];
+        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+        let public_key = keypair.x_only_public_key().0;
+
+        let prevouts = vec![
+            TxOut {
+                value: Amount::from_sat(1000),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
+            },
+            TxOut {
+                value: Amount::from_sat(1000),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
+            },
+            TxOut {
+                value: Amount::from_sat(1000),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
+            },
+        ];
+
+        let sigs = validate_and_sign(&keypair, &tx, &prevouts, &scripts)
+            .expect("Validation and signing failed");
+
+        assert_eq!(sigs.len(), 2);
+
+        // Manually verify the signatures against the sighashes to ensure they are valid BIP-340 sigs
+        let mut cache = SighashCache::new(&tx);
+        let prevouts_all = Prevouts::All(&prevouts);
+
+        for (i, (input_idx, _)) in scripts.iter().enumerate() {
+            let sighash = cache
+                .taproot_key_spend_signature_hash(
+                    *input_idx,
+                    &prevouts_all,
+                    bitcoin::TapSighashType::All,
+                )
+                .unwrap();
+
+            let msg = Message::from_digest(sighash.to_byte_array());
+
+            // Verify using secp
+            secp.verify_schnorr(&sigs[i], &msg, &public_key)
+                .expect("Signature verification failed");
+        }
     }
 }
