@@ -223,7 +223,7 @@ fn validate_with_sighashcache<'a>(
 mod tests {
 
     use bitcoin::{
-        ScriptBuf, Transaction, TxOut,
+        ScriptBuf, Transaction, TxOut, XOnlyPublicKey,
         key::Secp256k1,
         secp256k1::{self, All},
     };
@@ -258,7 +258,7 @@ mod tests {
     }
 
     /// Returns (pk, msg, sig) bytes
-    pub fn mock_signed_message(secp: &Secp256k1<All>) -> ([u8; 32], [u8; 32], [u8; 64]) {
+    pub fn mock_signed_message(secp: &Secp256k1<All>) -> (XOnlyPublicKey, [u8; 32], [u8; 64]) {
         // Generate a random keypair for the test
         let mut rng = secp256k1::rand::thread_rng();
         let keypair = secp256k1::Keypair::new(secp, &mut rng);
@@ -269,6 +269,6 @@ mod tests {
         let msg = secp256k1::Message::from_digest_slice(&msg_bytes).unwrap();
         let sig = secp.sign_schnorr(&msg, &keypair);
 
-        (pk.serialize(), msg_bytes, sig.serialize())
+        (pk, msg_bytes, sig.serialize())
     }
 }

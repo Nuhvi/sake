@@ -135,6 +135,7 @@ mod tests {
         let (pk, msg, sig) = mock_signed_message(&secp);
 
         let script = script! {
+            { pk }
             OP_CHECKSIGFROMSTACK
             { 1 }
             OP_EQUALVERIFY
@@ -145,7 +146,6 @@ mod tests {
         let witness = vec![
             sig.to_vec(), // <sig>
             msg.to_vec(), // <msg>
-            pk.to_vec(),  // <pubkey>
         ];
 
         validate_single_script(script, witness).expect("Valid Schnorr signature should pass CSFS");
