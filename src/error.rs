@@ -37,6 +37,9 @@ pub enum ExecError {
     ScriptIntNumericOverflow,
     Debug,
 
+    TxHashVerify,
+    TxHash(String),
+
     NoMoreInstructions { success: bool },
 }
 
