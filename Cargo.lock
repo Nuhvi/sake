@@ -77,7 +77,7 @@ checksum = "2dee39a0ee5b4095224a0cfc6bf4cc1baf0f9624b96b367e53b66d974e51d953"
 [[package]]
 name = "bitcoin-script"
 version = "0.4.0"
-source = "git+https://github.com/Nuhvi/rust-bitcoin-script-sake.git#23f09be61e502ab3774c6e0490ba41679120d31b"
+source = "git+https://github.com/Nuhvi/rust-bitcoin-script-sake.git#aa76edab52703b6eb6e27f081bf9db0aa0531eeb"
 dependencies = [
  "bitcoin",
  "script-macro",
@@ -411,7 +411,7 @@ dependencies = [
 [[package]]
 name = "script-macro"
 version = "0.4.0"
-source = "git+https://github.com/Nuhvi/rust-bitcoin-script-sake.git#23f09be61e502ab3774c6e0490ba41679120d31b"
+source = "git+https://github.com/Nuhvi/rust-bitcoin-script-sake.git#aa76edab52703b6eb6e27f081bf9db0aa0531eeb"
 dependencies = [
  "bitcoin",
  "proc-macro-error",

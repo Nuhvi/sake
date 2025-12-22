@@ -15,10 +15,7 @@ pub use crate::stack::{ConditionStack, Stack};
 mod op_checksig;
 mod sake_opcodes {
     pub mod op_cat;
-    pub mod op_csfs;
 }
-
-pub use sake_opcodes::op_csfs::OP_CHECKSIGFROMSTACK;
 
 /// Maximum number of bytes pushable to the stack
 const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
@@ -185,12 +182,9 @@ impl<'a, 'b> Exec<'a, 'b> {
 
             // OP_CTLV and OP_CSV are noop
             OP_NOP | OP_NOP1 | OP_CLTV | OP_CSV | OP_NOP4 | OP_NOP5 | OP_NOP6 | OP_NOP7
-            | OP_NOP8 | OP_NOP10 => {
+            | OP_NOP8 | OP_NOP9 | OP_NOP10 => {
                 // nops
             }
-
-            // OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
-            OP_CHECKSIGFROMSTACK => self.handle_op_csfs()?,
 
             //
             // Control

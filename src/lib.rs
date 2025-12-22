@@ -45,8 +45,6 @@ use exec::Exec;
 pub use error::Error;
 pub use witness_carrier::SakeWitnessCarrier;
 
-pub use exec::OP_CHECKSIGFROMSTACK;
-
 /// Validates SAKE scripts in a transaction.
 ///
 /// - `tx`: The transaction (used to calculate the sighash) and the last output contains the script witnesses as an OP_RETURN
@@ -223,10 +221,10 @@ fn validate_with_sighashcache<'a>(
 mod tests {
 
     use bitcoin::{
-        Amount, ScriptBuf, Transaction, TxOut, XOnlyPublicKey,
+        Amount, ScriptBuf, Transaction, TxOut,
         hashes::Hash,
         key::{Keypair, Secp256k1},
-        secp256k1::{self, All, Message},
+        secp256k1::Message,
         sighash::{Prevouts, SighashCache},
     };
 
@@ -261,33 +259,12 @@ mod tests {
         validate_no_sake(&dummy_tx, &prevouts, &[(0, script)])
     }
 
-    /// Returns (pk, msg, sig) bytes
-    pub fn mock_signed_message(secp: &Secp256k1<All>) -> (XOnlyPublicKey, [u8; 32], [u8; 64]) {
-        // Generate a random keypair for the test
-        let mut rng = secp256k1::rand::thread_rng();
-        let keypair = secp256k1::Keypair::new(secp, &mut rng);
-        let pk = keypair.x_only_public_key().0;
-
-        // BIP 348 requires a 32-byte message for the current BIP 340 implementation
-        let msg_bytes = [0x42u8; 32];
-        let msg = secp256k1::Message::from_digest_slice(&msg_bytes).unwrap();
-        let sig = secp.sign_schnorr(&msg, &keypair);
-
-        (pk, msg_bytes, sig.serialize())
-    }
-
-    fn sake_script(pk: XOnlyPublicKey) -> Script {
+    fn sake_script() -> Script {
         script! {
             // Test OP_CAT
             { b"world".to_vec() }
             OP_CAT
             { b"hello world".to_vec() }
-            OP_EQUALVERIFY
-
-            // Test OP_CHECKSIGFROMSTACK
-            { pk }
-            OP_CHECKSIGFROMSTACK
-            { 1 }
             OP_EQUALVERIFY
 
             { 1 }
@@ -296,12 +273,8 @@ mod tests {
 
     #[test]
     fn test_op_activated_fail() {
-        let secp = Secp256k1::new();
-
-        let (pk, msg, sig) = mock_signed_message(&secp);
-
-        let script = sake_script(pk).compile();
-        let witness = vec![sig.to_vec(), msg.to_vec(), b"hello ".to_vec()];
+        let script = sake_script().compile();
+        let witness = vec![b"hello ".to_vec()];
 
         validate_single_script(script.clone(), witness.clone()).unwrap();
         assert!(validate_single_script_no_sake_support(script, witness).is_err());
@@ -309,10 +282,7 @@ mod tests {
 
     #[test]
     fn test_op_activated_basic() {
-        let secp = Secp256k1::new();
-        let (pk, msg, sig) = mock_signed_message(&secp);
-
-        let sake_script = sake_script(pk);
+        let sake_script = sake_script();
 
         let script = script! {
             // CTLV and CSV are OP_NOPs in the emulator.
@@ -333,16 +303,14 @@ mod tests {
         .compile();
 
         //  Enable SAKE script by passing an OP_1
-        validate_single_script(
-            script.clone(),
-            vec![sig.to_vec(), msg.to_vec(), b"hello ".to_vec(), vec![1]],
-        )
-        .expect("valid sak emulation");
+        validate_single_script(script.clone(), vec![b"hello ".to_vec(), vec![1]])
+            .expect("valid sak emulation");
 
         // Disable SAKE script by passing an OP_0 (empty)
         validate_single_script_no_sake_support(script, vec![b"legacy".to_vec(), vec![]])
             .expect("valid legacy exec");
     }
+
     #[test]
     fn test_validate_and_sign_success() {
         // Sign the first and last inputs
