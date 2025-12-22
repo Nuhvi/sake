@@ -4,7 +4,6 @@ Script Army Knife Emulator
 ## How does it work
 
 ```rust
-// Witness script
 let emulation_witness = vec![
     // OP_CHECKSIGFROMSTACK inputs
     { signature }

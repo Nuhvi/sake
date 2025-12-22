@@ -95,7 +95,6 @@ impl<'a, 'b> Exec<'a, 'b> {
             instruction_position: 0,
             current_position: 0,
             cond_stack: ConditionStack::default(),
-            //TODO(stevenroose) does this need to be reversed?
             stack: Stack::from_u8_vec(script_witness),
             altstack: Stack::new(),
             validation_weight: start_validation_weight,
