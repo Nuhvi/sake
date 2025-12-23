@@ -71,3 +71,72 @@ impl<'a, 'b> Exec<'a, 'b> {
         .map_err(|err| ExecError::TxHash(err.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{Transaction, TxOut, consensus::encode::deserialize_hex, hashes::Hash};
+    use serde::Deserialize;
+
+    use crate::op_ctv::bip_0346::calculate_txhash;
+
+    #[derive(Debug, Deserialize)]
+    struct TestCase {
+        tx: String,
+        prevs: Vec<String>,
+        vectors: Vec<TestVector>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TestVector {
+        id: String,
+        txfs: String,
+        input: usize,
+        codeseparator: Option<u32>,
+        txhash: String,
+    }
+
+    #[test]
+    fn test_op_checktxhashverify() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/exec/sake_opcodes/op_ctv/bip_346_test_vectors.json");
+        let file = std::fs::read(path).unwrap();
+        let test_cases: Vec<TestCase> = serde_json::from_slice(&file).unwrap();
+
+        let mut failure = vec![];
+
+        for test_case in test_cases {
+            let tx: Transaction = deserialize_hex(&test_case.tx).unwrap();
+            let prevs: Vec<TxOut> = test_case
+                .prevs
+                .iter()
+                .map(|s| deserialize_hex(&s).unwrap())
+                .collect();
+
+            for vector in &test_case.vectors {
+                let TestVector {
+                    id,
+                    txfs,
+                    input,
+                    codeseparator,
+                    txhash,
+                } = vector;
+
+                let txfs: Vec<u8> = hex::decode(txfs).unwrap();
+                let txhash: Vec<u8> = hex::decode(txhash).unwrap();
+
+                let calculated =
+                    calculate_txhash(&txfs, &tx, &prevs, *input as u32, *codeseparator).unwrap();
+
+                if calculated.as_byte_array().as_slice() != &txhash {
+                    failure.push(id.clone());
+                    continue;
+                }
+
+                assert_eq!(calculated.as_byte_array().as_slice(), &txhash);
+            }
+        }
+
+        dbg!(&failure);
+        assert!(failure.is_empty())
+    }
+}
