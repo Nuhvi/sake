@@ -5,8 +5,6 @@ use std::rc::Rc;
 
 use crate::exec::{ExecError, read_scriptint};
 
-// TODO: pop return an error instead of None
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StackEntry {
     Num(i64),

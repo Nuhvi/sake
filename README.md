@@ -74,7 +74,7 @@ let locking_script = script!{
 - Only Taproot
 - Only minimally encoded instructions
 - No `Annex`
-- `OP_CODESEPARATOR` is a nop
+- `OP_CODESEPARATOR` is disabled
 - `OP_CTLV` and `OP_CSV` are nops
 
 ## Acknowledgment

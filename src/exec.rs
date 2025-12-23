@@ -529,9 +529,7 @@ impl<'a, 'b> Exec<'a, 'b> {
                     .pushstr(sha256d::Hash::hash(&top[..]).to_byte_array().as_ref());
             }
 
-            OP_CODESEPARATOR => {
-                // nop
-            }
+            OP_CODESEPARATOR => return Err(ExecError::DisabledOpcode),
 
             OP_CHECKSIG | OP_CHECKSIGVERIFY => {
                 let sig = self.stack.topstr(-2)?.clone();

@@ -58,7 +58,7 @@ impl<'a, 'b> Exec<'a, 'b> {
         let tx = self.sighashcache.transaction();
         let prevouts = self.prevouts;
         let current_input_idx = self.input_idx as u32;
-        // TODO: Consider supporting code separator at least when emulating legacy code.
+        // OP_CODESEPARATOR is disabled
         let current_input_last_codeseparator_pos = None;
 
         bip_0346::calculate_txhash(

@@ -45,6 +45,8 @@ use exec::Exec;
 pub use error::Error;
 pub use witness_carrier::SakeWitnessCarrier;
 
+pub use exec::op_ctv;
+
 /// Validates SAKE scripts in a transaction.
 ///
 /// - `tx`: The transaction (used to calculate the sighash) and the last output contains the script witnesses as an OP_RETURN
