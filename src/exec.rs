@@ -45,7 +45,7 @@ pub struct Exec<'a, 'b> {
     input_idx: usize,
     leaf_hash: TapLeafHash,
 
-    sighashcache: &'b mut SighashCache<&'a Transaction>,
+    sighashcache: &'b mut SighashCache<Transaction>,
     script: &'a Script,
     // Store the instruction position manually instead of keeping an iterator
     instruction_position: usize,
@@ -61,7 +61,7 @@ pub struct Exec<'a, 'b> {
 
 impl<'a, 'b> Exec<'a, 'b> {
     pub(crate) fn new(
-        sighashcache: &'b mut SighashCache<&'a Transaction>,
+        sighashcache: &'b mut SighashCache<Transaction>,
         prevouts: &'a [TxOut],
         input_idx: usize,
         script: &'a Script,

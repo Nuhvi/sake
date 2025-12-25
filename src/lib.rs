@@ -60,10 +60,7 @@ pub fn validate(
     prevouts: &[TxOut],
     inputs: &[(usize, ScriptBuf)],
 ) -> Result<(), Error> {
-    let last_output = tx.output.last();
-    let mut sighashcache = SighashCache::new(tx);
-
-    validate_with_sighashcache(&mut sighashcache, last_output, prevouts, inputs, true)
+    validate_inner(&mut tx.clone(), prevouts, inputs, true)
 }
 
 /// Validates SAKE scripts in a transaction and return signatures over
@@ -102,15 +99,18 @@ pub fn validate_and_sign_with_secp(
     prevouts: &[TxOut],
     inputs: &[(usize, ScriptBuf)],
 ) -> Result<Vec<schnorr::Signature>, Error> {
-    let last_output = tx.output.last();
-    let mut sighashcache = SighashCache::new(tx);
+    let original_tx = tx.clone();
+    let mut emulated_tx = tx.clone();
 
-    validate_with_sighashcache(&mut sighashcache, last_output, prevouts, inputs, true)?;
+    validate_inner(&mut emulated_tx, prevouts, inputs, true)?;
 
     let mut signatures = Vec::with_capacity(inputs.len());
 
     // Taproot sighashes require knowledge of all prevouts being spent
     let prevouts_all = Prevouts::All(prevouts);
+
+    // sighashcache from the original transaction.
+    let mut sighashcache = SighashCache::new(original_tx);
 
     for (input_idx, _script) in inputs {
         let sighash = sighashcache
@@ -144,23 +144,21 @@ pub fn validate_no_sake(
     prevouts: &[TxOut],
     inputs: &[(usize, ScriptBuf)],
 ) -> Result<(), Error> {
-    let last_output = tx.output.last();
-    let mut sighashcache = SighashCache::new(tx);
-
-    validate_with_sighashcache(&mut sighashcache, last_output, prevouts, inputs, false)
+    validate_inner(&mut tx.clone(), prevouts, inputs, false)
 }
 
-fn validate_with_sighashcache<'a>(
-    sighashcache: &mut SighashCache<&'a Transaction>,
-    last_output: Option<&TxOut>,
+fn validate_inner<'a>(
+    tx: &mut Transaction,
     prevouts: &'a [TxOut],
     inputs: &'a [(usize, ScriptBuf)],
 
     supports_sake: bool,
 ) -> Result<(), Error> {
     if inputs.is_empty() {
-        return Ok(());
+        return Err(Error::NoInputs);
     }
+
+    let last_output = tx.output.pop();
 
     // Step 1: Extract witness stacks from the last output if it's OP_RETURN
     let witness_stacks = if let Some(last_output) = last_output {
@@ -179,6 +177,13 @@ fn validate_with_sighashcache<'a>(
         });
     }
 
+    // SighashCache from the transaction without the witness stack.
+    //
+    // This is because the witness stack may include a TXHASH that
+    // can't be created from the transaction with the witness carrier,
+    // since the circular dependency
+    let mut sighashcache = SighashCache::new(tx.clone());
+
     // Step 3: Execute each input script with its witness
     for ((input_idx, script), (witness_index, witness_stack)) in inputs.iter().zip(witness_stacks) {
         if *input_idx != witness_index {
@@ -189,7 +194,7 @@ fn validate_with_sighashcache<'a>(
         }
 
         let mut exec = Exec::new(
-            sighashcache,
+            &mut sighashcache,
             prevouts,
             *input_idx,
             script,
@@ -224,25 +229,143 @@ fn validate_with_sighashcache<'a>(
 mod tests {
 
     use bitcoin::{
-        Amount, ScriptBuf, Transaction, TxOut, XOnlyPublicKey,
+        Amount, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness, XOnlyPublicKey,
         hashes::Hash,
         key::{Keypair, Secp256k1},
+        opcodes::all::{OP_PUSHNUM_6, OP_PUSHNUM_7, OP_PUSHNUM_8, OP_PUSHNUM_16},
         secp256k1::{self, All, Message},
         sighash::{Prevouts, SighashCache},
     };
 
     use bitcoin_script::{Script, script};
 
-    use crate::{Error, SakeWitnessCarrier, validate, validate_and_sign, validate_no_sake};
+    use crate::{
+        Error, SakeWitnessCarrier, calculate_txhash, validate, validate_and_sign, validate_no_sake,
+    };
 
-    pub fn validate_single_script(script: ScriptBuf, witness: Vec<Vec<u8>>) -> Result<(), Error> {
+    pub fn dummy_tx() -> (Transaction, Vec<TxOut>) {
         let dummy_tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::absolute::LockTime::ZERO,
-            input: vec![],
-            output: vec![TxOut::sake_witness_carrier(&[(0, witness)])],
+            input: vec![
+                TxIn {
+                    previous_output:
+                        "1111111111111111111111111111111111111111111111111111111111111111:1"
+                            .parse()
+                            .unwrap(),
+                    script_sig: vec![0x23].into(),
+                    sequence: Sequence::from_consensus(1),
+                    witness: Witness::new(),
+                },
+                TxIn {
+                    previous_output:
+                        "2222222222222222222222222222222222222222222222222222222222222222:2"
+                            .parse()
+                            .unwrap(),
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::from_consensus(3),
+                    witness: {
+                        // p2wsh annex-like stack element
+                        let mut buf = Witness::new();
+                        buf.push(vec![0x13]);
+                        buf.push(vec![0x14]);
+                        buf.push(vec![0x50, 0x42]); // annex
+                        buf
+                    },
+                },
+                TxIn {
+                    previous_output:
+                        "3333333333333333333333333333333333333333333333333333333333333333:3"
+                            .parse()
+                            .unwrap(),
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::from_consensus(2),
+                    witness: {
+                        let mut buf = Witness::new();
+                        buf.push(vec![0x12]);
+                        buf
+                    },
+                },
+                TxIn {
+                    previous_output:
+                        "4444444444444444444444444444444444444444444444444444444444444444:4"
+                            .parse()
+                            .unwrap(),
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::from_consensus(3),
+                    witness: {
+                        let mut buf = Witness::new();
+                        buf.push(vec![0x13]);
+                        buf.push(vec![0x14]);
+                        buf.push(vec![0x50, 0x42]); // annex
+                        buf
+                    },
+                },
+            ],
+            output: vec![
+                TxOut {
+                    script_pubkey: vec![OP_PUSHNUM_6.to_u8()].into(),
+                    value: Amount::from_sat(350),
+                },
+                TxOut {
+                    script_pubkey: vec![OP_PUSHNUM_7.to_u8()].into(),
+                    value: Amount::from_sat(351),
+                },
+                TxOut {
+                    script_pubkey: vec![OP_PUSHNUM_8.to_u8()].into(),
+                    value: Amount::from_sat(353),
+                },
+            ],
         };
-        let prevouts = vec![];
+        let prevouts = vec![
+            TxOut {
+                script_pubkey: vec![OP_PUSHNUM_16.to_u8()].into(),
+                value: Amount::from_sat(360),
+            },
+            TxOut {
+                script_pubkey: vec![
+                    // p2wsh
+                    0x00, 0x20, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ]
+                .into(),
+                value: Amount::from_sat(361),
+            },
+            TxOut {
+                script_pubkey: vec![
+                    // p2tr
+                    0x51, 0x20, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ]
+                .into(),
+                value: Amount::from_sat(361),
+            },
+            TxOut {
+                script_pubkey: vec![
+                    // p2tr
+                    0x51, 0x20, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ]
+                .into(),
+                value: Amount::from_sat(362),
+            },
+        ];
+
+        (dummy_tx, prevouts)
+    }
+
+    pub fn dummy_tx_with_witness_carrier(witness: Vec<Vec<u8>>) -> (Transaction, Vec<TxOut>) {
+        let (mut dummy_tx, prevouts) = dummy_tx();
+
+        dummy_tx
+            .output
+            .push(TxOut::sake_witness_carrier(&[(0, witness)]));
+
+        (dummy_tx, prevouts)
+    }
+
+    pub fn validate_single_script(script: ScriptBuf, witness: Vec<Vec<u8>>) -> Result<(), Error> {
+        let (dummy_tx, prevouts) = dummy_tx_with_witness_carrier(witness);
 
         validate(&dummy_tx, &prevouts, &[(0, script)])
     }
@@ -251,13 +374,7 @@ mod tests {
         script: ScriptBuf,
         witness: Vec<Vec<u8>>,
     ) -> Result<(), Error> {
-        let dummy_tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::absolute::LockTime::ZERO,
-            input: vec![],
-            output: vec![TxOut::sake_witness_carrier(&[(0, witness)])],
-        };
-        let prevouts = vec![];
+        let (dummy_tx, prevouts) = dummy_tx_with_witness_carrier(witness);
 
         validate_no_sake(&dummy_tx, &prevouts, &[(0, script)])
     }
@@ -278,12 +395,25 @@ mod tests {
     }
 
     fn sake_script(pk: XOnlyPublicKey) -> Script {
+        // Tx without the witness carrier
+        let (tx, prevouts) = dummy_tx();
+
         script! {
             // Test OP_CAT
             { b"world".to_vec() }
             OP_CAT
             { b"hello world".to_vec() }
             OP_EQUALVERIFY
+
+            // Test OP_CHECKTXHASHVERIFY
+            {
+                calculate_txhash(&[], &tx, &prevouts, 0, None)
+                .unwrap()
+                .to_byte_array()
+                .to_vec()
+            }
+            OP_CTV
+            OP_DROP
 
             // Test OP_CHECKSIGFROMSTACKVERIFY
             { pk }
@@ -302,6 +432,7 @@ mod tests {
         let (pk, msg, sig) = mock_signed_message(&secp);
 
         let script = sake_script(pk).compile();
+
         let witness = vec![sig.to_vec(), msg.to_vec(), b"hello ".to_vec()];
 
         validate_single_script(script.clone(), witness.clone()).unwrap();

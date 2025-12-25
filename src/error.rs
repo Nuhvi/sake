@@ -75,4 +75,7 @@ pub enum Error {
 
     /// Error signing inputs
     SigningError(TaprootError),
+
+    /// No Inputs to validate
+    NoInputs,
 }

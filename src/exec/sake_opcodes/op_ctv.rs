@@ -10,6 +10,9 @@ use crate::{Exec, exec::ExecError};
 
 mod bip_0346;
 
+#[cfg(test)]
+pub use bip_0346::calculate_txhash;
+
 pub const OP_CHECKTXHASHVERIFY: Opcode = OP_NOP4;
 /// OP_CHECKTXHASHVERIFY
 pub const OP_CTV: Opcode = OP_CHECKTXHASHVERIFY;

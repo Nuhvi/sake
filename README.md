@@ -44,7 +44,14 @@ let locking_script = script!{
         { b"hello world".to_vec() }
         OP_EQUALVERIFY
 
-        // Test OP_CHECKSIGFROMSTACKVERIFY (OP_NOP5)
+
+        // OP_CTV: OP_CHECKTXHASHVERIFY (OP_NOP4)
+        { txhash.to_vec() }
+        OP_CHECKTXHASHVERIFY
+        OP_DROP
+        
+
+        // OP_CSFSV: OP_CHECKSIGFROMSTACKVERIFY (OP_NOP5)
         { pk }
         OP_CHECKSIGFROMSTACKVERIFY
         OP_2DROP
