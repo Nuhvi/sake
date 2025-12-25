@@ -1,3 +1,5 @@
+//! OP_CHECKTXHASHVERIFY
+
 use bitcoin::{
     Opcode,
     hashes::{Hash, sha256},
@@ -82,7 +84,7 @@ mod tests {
     use bitcoin::{Transaction, TxOut, consensus::encode::deserialize_hex, hashes::Hash};
     use serde::Deserialize;
 
-    use crate::op_ctv::bip_0346::calculate_txhash;
+    use super::bip_0346::calculate_txhash;
 
     #[derive(Debug, Deserialize)]
     struct TestCase {

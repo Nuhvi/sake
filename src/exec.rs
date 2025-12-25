@@ -15,11 +15,14 @@ pub use crate::stack::{ConditionStack, Stack};
 mod op_checksig;
 mod sake_opcodes {
     pub mod op_cat;
+    pub mod op_csfsv;
     pub mod op_ctv;
 }
 
+pub use sake_opcodes::op_csfsv;
 pub use sake_opcodes::op_ctv;
 
+use sake_opcodes::op_csfsv::OP_CHECKSIGFROMSTACKVERIFY;
 use sake_opcodes::op_ctv::OP_CTV;
 
 /// Maximum number of bytes pushable to the stack
@@ -185,12 +188,16 @@ impl<'a, 'b> Exec<'a, 'b> {
             }
 
             // OP_CTLV and OP_CSV are noop
-            OP_NOP | OP_NOP1 | OP_CLTV | OP_CSV | OP_NOP5 | OP_NOP6 | OP_NOP7 | OP_NOP8
-            | OP_NOP9 | OP_NOP10 => {
+            OP_NOP | OP_NOP1 | OP_CLTV | OP_CSV | OP_NOP6 | OP_NOP7 | OP_NOP8 | OP_NOP9
+            | OP_NOP10 => {
                 // nops
             }
 
+            // OP_CHECKTXHASHVERIFY for next transaction commitment and possibly fine grained introspection
             OP_CTV => self.handle_op_ctv()?,
+
+            // A NOP compatible version of OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
+            OP_CHECKSIGFROMSTACKVERIFY => self.handle_op_csfsv()?,
 
             //
             // Control

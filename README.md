@@ -44,11 +44,12 @@ let locking_script = script!{
         { b"hello world".to_vec() }
         OP_EQUALVERIFY
 
-        // OP_CHECKSIGFROMSTACK (OP_NOP9)
-        { pubkey }
-        OP_CHECKSIGFROMSTACK
-        { 1 }
-        OP_EQUALVERIFY
+        // Test OP_CHECKSIGFROMSTACKVERIFY (OP_NOP5)
+        { pk }
+        OP_CHECKSIGFROMSTACKVERIFY
+        OP_2DROP
+        OP_DROP
+
 
         { 1 }
     OP_ELSE
