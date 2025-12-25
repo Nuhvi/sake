@@ -36,7 +36,7 @@ let locking_script = script!{
 
     OP_EQUAL
     OP_IF
-        // Emulate Script Army Knife Emulator
+        // Emulate Script Army Knife OpCodes:
 
         // OP_CAT
         { b"world".to_vec() }
