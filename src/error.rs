@@ -38,7 +38,7 @@ pub enum ExecError {
     Debug,
 
     TxHashVerify,
-    TxHash(String),
+    TxHash(&'static str),
 
     NoMoreInstructions { success: bool },
 }
