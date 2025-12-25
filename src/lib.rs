@@ -198,7 +198,7 @@ fn validate_inner<'a>(
             prevouts,
             *input_idx,
             script,
-            witness_stack.clone(),
+            witness_stack,
             supports_sake,
         )?;
 
