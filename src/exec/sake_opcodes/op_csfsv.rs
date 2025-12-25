@@ -7,7 +7,7 @@ pub const OP_CSFSV: Opcode = OP_CHECKSIGFROMSTACKVERIFY;
 
 use crate::{Exec, exec::ExecError};
 
-impl<'a, 'b> Exec<'a, 'b> {
+impl<'a> Exec<'a> {
     pub(crate) fn handle_op_csfsv(&mut self) -> Result<(), ExecError> {
         // Nop
         if !self.supports_sake {

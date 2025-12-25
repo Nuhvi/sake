@@ -9,7 +9,7 @@ use crate::{
     exec::{ExecError, VALIDATION_WEIGHT_PER_SIGOP_PASSED},
 };
 
-impl<'a, 'b> Exec<'a, 'b> {
+impl<'a> Exec<'a> {
     pub(crate) fn verify_transaction_signature(
         &mut self,
         sig: &[u8],

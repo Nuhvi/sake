@@ -29,7 +29,7 @@ pub use bip_0346::{
     TXFS_VERSION,
 };
 
-impl<'a, 'b> Exec<'a, 'b> {
+impl<'a> Exec<'a> {
     pub(crate) fn handle_op_ctv(&mut self) -> Result<(), ExecError> {
         if !self.supports_sake {
             return Ok(());

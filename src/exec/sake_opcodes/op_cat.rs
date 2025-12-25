@@ -2,7 +2,7 @@ use bitcoin::constants::MAX_SCRIPT_ELEMENT_SIZE;
 
 use crate::{Exec, exec::ExecError};
 
-impl<'a, 'b> Exec<'a, 'b> {
+impl<'a> Exec<'a> {
     pub(crate) fn handle_op_cat(&mut self) -> Result<(), ExecError> {
         // Nop
         if !self.supports_sake {

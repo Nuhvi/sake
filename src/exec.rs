@@ -38,14 +38,14 @@ const VALIDATION_WEIGHT_OFFSET: i64 = 50;
 const VALIDATION_WEIGHT_PER_SIGOP_PASSED: i64 = 50;
 
 /// Partial execution of a script.
-pub struct Exec<'a, 'b> {
+pub struct Exec<'a> {
     supports_sake: bool,
 
     prevouts: &'a [TxOut],
     input_idx: usize,
     leaf_hash: TapLeafHash,
 
-    sighashcache: &'b mut SighashCache<Transaction>,
+    sighashcache: &'a mut SighashCache<Transaction>,
     script: &'a Script,
     // Store the instruction position manually instead of keeping an iterator
     instruction_position: usize,
@@ -59,16 +59,16 @@ pub struct Exec<'a, 'b> {
     secp: secp256k1::Secp256k1<secp256k1::All>,
 }
 
-impl<'a, 'b> Exec<'a, 'b> {
+impl<'a> Exec<'a> {
     pub(crate) fn new(
-        sighashcache: &'b mut SighashCache<Transaction>,
+        sighashcache: &'a mut SighashCache<Transaction>,
         prevouts: &'a [TxOut],
         input_idx: usize,
         script: &'a Script,
         script_witness: Vec<Vec<u8>>,
 
         supports_sake: bool,
-    ) -> Result<Exec<'a, 'b>, Error> {
+    ) -> Result<Exec<'a>, Error> {
         // We want to make sure the script is valid so we don't have to throw parsing errors
         // while executing.
         let instructions = script.instructions_minimal();
