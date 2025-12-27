@@ -1,7 +1,7 @@
 //! OP_CHECKTXHASHVERIFY
 
 use bitcoin::{
-    Opcode,
+    Opcode, ScriptBuf,
     hashes::{Hash, sha256},
     opcodes::all::OP_NOP4,
 };
@@ -13,9 +13,17 @@ mod bip_0346;
 #[cfg(test)]
 pub use bip_0346::calculate_txhash;
 
-pub const OP_CHECKTXHASHVERIFY: Opcode = OP_NOP4;
-/// OP_CHECKTXHASHVERIFY
-pub const OP_CTV: Opcode = OP_CHECKTXHASHVERIFY;
+pub(crate) const OP_CODE: Opcode = OP_NOP4;
+
+#[allow(non_snake_case)]
+pub fn OP_CHECKTXHASHVERIFY() -> ScriptBuf {
+    ScriptBuf::from_bytes(vec![OP_CODE.to_u8()])
+}
+
+#[allow(non_snake_case)]
+pub fn OP_CTV() -> ScriptBuf {
+    OP_CHECKTXHASHVERIFY()
+}
 
 pub use bip_0346::{
     TXFS_CONTROL, TXFS_CURRENT_INPUT_CONTROL_BLOCK, TXFS_CURRENT_INPUT_IDX,

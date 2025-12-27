@@ -25,9 +25,11 @@ impl<'a> Exec<'a> {
 
 #[cfg(test)]
 mod tests {
-    use bitcoin_script::script;
-
     use crate::{Error, exec::ExecError, tests::validate_single_script};
+
+    use bitcoin_script::{define_pushable, script};
+
+    define_pushable!();
 
     #[test]
     fn test_op_cat_success() {
@@ -37,8 +39,7 @@ mod tests {
             OP_CAT
             {b"hello world".to_vec()}
             OP_EQUAL
-        }
-        .compile();
+        };
 
         validate_single_script(script, vec![]).unwrap();
     }
@@ -52,8 +53,7 @@ mod tests {
             OP_CAT
             {b"bitcoin".to_vec()}
             OP_EQUAL
-        }
-        .compile();
+        };
 
         validate_single_script(script, vec![]).unwrap();
 
@@ -64,8 +64,7 @@ mod tests {
             OP_CAT
             {b"".to_vec()}
             OP_EQUAL
-        }
-        .compile();
+        };
 
         validate_single_script(script, vec![]).unwrap();
     }
@@ -82,8 +81,7 @@ mod tests {
             OP_CAT
             OP_DROP
             { 1 }
-        }
-        .compile();
+        };
 
         validate_single_script(script, vec![]).unwrap();
     }
@@ -100,8 +98,7 @@ mod tests {
             OP_CAT
             OP_DROP
             { 1 }
-        }
-        .compile();
+        };
 
         let result = validate_single_script(script, vec![]);
 
@@ -116,8 +113,7 @@ mod tests {
             OP_CAT
             OP_DROP
             { 1 }
-        }
-        .compile();
+        };
 
         let result = validate_single_script(script, vec![]);
         assert!(matches!(

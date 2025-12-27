@@ -237,11 +237,14 @@ mod tests {
         sighash::{Prevouts, SighashCache},
     };
 
-    use bitcoin_script::{Script, script};
+    use bitcoin_script::{define_pushable, script};
 
     use crate::{
-        Error, SakeWitnessCarrier, calculate_txhash, validate, validate_and_sign, validate_no_sake,
+        Error, OP_CHECKSIGFROMSTACKVERIFY, OP_CTV, SakeWitnessCarrier,
+        exec::op_ctv::calculate_txhash, validate, validate_and_sign, validate_no_sake,
     };
+
+    define_pushable!();
 
     pub fn dummy_tx() -> (Transaction, Vec<TxOut>) {
         let dummy_tx = Transaction {
@@ -394,7 +397,7 @@ mod tests {
         (pk, msg_bytes, sig.serialize())
     }
 
-    fn sake_script(pk: XOnlyPublicKey) -> Script {
+    fn sake_script(pk: XOnlyPublicKey) -> ScriptBuf {
         // Tx without the witness carrier
         let (tx, prevouts) = dummy_tx();
 
@@ -431,7 +434,7 @@ mod tests {
 
         let (pk, msg, sig) = mock_signed_message(&secp);
 
-        let script = sake_script(pk).compile();
+        let script = sake_script(pk);
 
         let witness = vec![sig.to_vec(), msg.to_vec(), b"hello ".to_vec()];
 
@@ -461,8 +464,7 @@ mod tests {
                 { b"legacy".to_vec() }
                 OP_EQUAL
             OP_ENDIF
-        }
-        .compile();
+        };
 
         //  Enable SAKE script by passing an OP_1
         validate_single_script(
@@ -481,9 +483,9 @@ mod tests {
         // Sign the first and last inputs
         let scripts = vec![
             // Input 0: Script that passes if witness is 1
-            (0, script! { OP_IF { 1 } OP_ELSE { 0 } OP_ENDIF }.compile()),
+            (0, script! { OP_IF { 1 } OP_ELSE { 0 } OP_ENDIF }),
             // Input 2: Script that passes if witness is 0
-            (2, script! { OP_IF { 0 } OP_ELSE { 1 } OP_ENDIF }.compile()),
+            (2, script! { OP_IF { 0 } OP_ELSE { 1 } OP_ENDIF }),
         ];
 
         // Witness stacks encoded in witness carrier

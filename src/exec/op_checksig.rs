@@ -106,7 +106,9 @@ mod tests {
         taproot::LeafVersion,
     };
 
-    use bitcoin_script::script;
+    use bitcoin_script::{define_pushable, script};
+
+    define_pushable!();
 
     #[test]
     fn test_op_checksig_unknown_key_type_succeeds() {
@@ -115,8 +117,7 @@ mod tests {
             { 1 }
             OP_EQUALVERIFY
             { 1 }
-        }
-        .compile();
+        };
         let witness = vec![
             vec![0x01; 64], // Non-empty Sig
             vec![0xAA; 33], // Unknown PK type (33 bytes)
@@ -132,8 +133,7 @@ mod tests {
             { 0 }
             OP_EQUALVERIFY
             { 1 }
-        }
-        .compile();
+        };
         let witness = vec![
             vec![],         // EMPTY SIG
             vec![0x01; 32], // PK
@@ -146,8 +146,7 @@ mod tests {
     fn test_op_checksig_pk_size_zero_fails() {
         let script = script! {
             OP_CHECKSIG
-        }
-        .compile();
+        };
         let witness = vec![
             vec![0x01; 64],
             vec![0x00; 32],
@@ -167,8 +166,7 @@ mod tests {
     fn test_op_checksig_invalid_sig_hard_fail() {
         let script = script! {
             OP_CHECKSIG
-        }
-        .compile();
+        };
         let witness = vec![
             vec![0xff; 64], // Invalid but non-empty sig
             vec![0x01; 32],
@@ -195,8 +193,7 @@ mod tests {
             { 1 }
             OP_EQUALVERIFY
             { 1 }
-        }
-        .compile();
+        };
 
         let tx = Transaction {
             version: bitcoin::transaction::Version::TWO,

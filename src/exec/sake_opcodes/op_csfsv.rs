@@ -1,9 +1,17 @@
 // A NOP compatible version of OP_CHECKSIGFROMSTACKVERIFY [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
 
-use bitcoin::{Opcode, opcodes::all::OP_NOP5, secp256k1::Message};
+use bitcoin::{Opcode, ScriptBuf, opcodes::all::OP_NOP5, secp256k1::Message};
 
-pub const OP_CHECKSIGFROMSTACKVERIFY: Opcode = OP_NOP5;
-pub const OP_CSFSV: Opcode = OP_CHECKSIGFROMSTACKVERIFY;
+pub(crate) const OP_CODE: Opcode = OP_NOP5;
+
+#[allow(non_snake_case)]
+pub fn OP_CHECKSIGFROMSTACKVERIFY() -> ScriptBuf {
+    ScriptBuf::from_bytes(vec![OP_CODE.to_u8()])
+}
+#[allow(non_snake_case)]
+pub fn OP_CSFSV() -> ScriptBuf {
+    OP_CHECKSIGFROMSTACKVERIFY()
+}
 
 use crate::{Exec, exec::ExecError};
 
@@ -38,14 +46,16 @@ impl<'a> Exec<'a> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        Error,
+        Error, OP_CHECKSIGFROMSTACKVERIFY,
         exec::ExecError,
         tests::{mock_signed_message, validate_single_script},
     };
 
     use bitcoin::key::Secp256k1;
 
-    use bitcoin_script::script;
+    use bitcoin_script::{define_pushable, script};
+
+    define_pushable!();
 
     #[test]
     fn test_op_csfs_unknown_key_type_succeeds() {
@@ -54,8 +64,7 @@ mod tests {
             OP_2DROP
             OP_DROP
             { 1 }
-        }
-        .compile();
+        };
         let witness = vec![
             vec![0x01; 64], // Non-empty Sig
             vec![0x00; 32], // Msg
@@ -72,8 +81,7 @@ mod tests {
             OP_2DROP
             OP_DROP
             { 1 }
-        }
-        .compile();
+        };
         let witness = vec![
             vec![],         // EMPTY SIG
             vec![0x00; 32], // Msg
@@ -87,8 +95,7 @@ mod tests {
     fn test_op_csfs_pk_size_zero_fails() {
         let script = script! {
             OP_CHECKSIGFROMSTACKVERIFY
-        }
-        .compile();
+        };
         let witness = vec![
             vec![0x01; 64],
             vec![0x00; 32],
@@ -108,8 +115,7 @@ mod tests {
     fn test_op_csfs_invalid_sig_hard_fail() {
         let script = script! {
             OP_CHECKSIGFROMSTACKVERIFY
-        }
-        .compile();
+        };
         let witness = vec![
             vec![0xff; 64], // Invalid but non-empty sig
             vec![0x00; 32],
@@ -136,8 +142,7 @@ mod tests {
             OP_2DROP
             OP_DROP
             { 1 }
-        }
-        .compile();
+        };
 
         let witness = vec![
             sig.to_vec(), // <sig>

@@ -80,12 +80,14 @@ checksum = "2dee39a0ee5b4095224a0cfc6bf4cc1baf0f9624b96b367e53b66d974e51d953"
 
 [[package]]
 name = "bitcoin-script"
-version = "0.4.0"
-source = "git+https://github.com/Nuhvi/rust-bitcoin-script-sake.git#ae4250c05827cfc3beb67142f56f32ab833b35f7"
+version = "0.2.0"
+source = "git+https://github.com/Bitcoin-Wildlife-Sanctuary/rust-bitcoin-script?tag=1.0.0#2f2510ab9e616eaae5b0db807d13c40eae6964a0"
 dependencies = [
  "bitcoin",
- "script-macro",
- "stdext",
+ "hex",
+ "proc-macro-error",
+ "proc-macro2",
+ "quote",
 ]
 
 [[package]]
@@ -436,17 +438,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "script-macro"
-version = "0.4.0"
-source = "git+https://github.com/Nuhvi/rust-bitcoin-script-sake.git#ae4250c05827cfc3beb67142f56f32ab833b35f7"
-dependencies = [
- "bitcoin",
- "proc-macro-error",
- "proc-macro2",
- "quote",
-]
-
-[[package]]
 name = "secp256k1"
 version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -515,12 +506,6 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
-
-[[package]]
-name = "stdext"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4af28eeb7c18ac2dbdb255d40bee63f203120e1db6b0024b177746ebec7049c1"
 
 [[package]]
 name = "syn"

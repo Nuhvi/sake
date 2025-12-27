@@ -126,6 +126,20 @@ impl Stack {
         }
     }
 
+    pub fn popnum(&mut self) -> Result<i64, ExecError> {
+        let entry = self.0.pop().ok_or(ExecError::InvalidStackOperation)?;
+        match entry {
+            StackEntry::Num(v) => {
+                if v <= i32::MAX as i64 {
+                    Ok(v)
+                } else {
+                    Err(ExecError::ScriptIntNumericOverflow)
+                }
+            }
+            StackEntry::StrRef(v) => Ok(read_scriptint(v.borrow().as_slice(), 4)?),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
