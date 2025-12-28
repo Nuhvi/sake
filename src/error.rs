@@ -1,6 +1,6 @@
 use bitcoin::{blockdata::script, sighash::TaprootError};
 
-use crate::{exec::Stack, witness_carrier::WitnessCarrierError};
+use crate::{exec::Stack, script_encoding, witness_carrier::WitnessCarrierError};
 
 /// Error of a script execution.
 ///
@@ -58,6 +58,9 @@ pub enum Error {
     InvalidWitnessCarriers(WitnessCarrierError),
     /// A witness stack was encoded in an invalid or corrupt format.
     InvalidWitnessEncoding,
+
+    /// Invalid encoding of SAKE script in tapscript with push bytes
+    InvalidScriptEncoding(script_encoding::ScriptDecodingError),
 
     /// Invalid Taproot witness program
     ScriptVerificationFailed { input: usize, final_stack: Stack },

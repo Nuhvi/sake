@@ -7,7 +7,7 @@ use bitcoin::{
 use std::io::{Cursor, Read}; // Added necessary imports
 
 const PREFIX: &[u8] = b"SAKE";
-const EXPECTED_VERSION: u8 = 0;
+pub(crate) const MAX_SUPPORTED_VERSION_VERSION: u8 = 0;
 
 pub trait SakeWitnessCarrier {
     fn sake_witness_carrier(stacks: &[(usize, Vec<Vec<u8>>)]) -> TxOut;
@@ -24,7 +24,7 @@ impl SakeWitnessCarrier for TxOut {
         bytes.extend_from_slice(PREFIX);
 
         // 2. Version (1 byte)
-        bytes.push(EXPECTED_VERSION);
+        bytes.push(MAX_SUPPORTED_VERSION_VERSION);
 
         // Stacks
         for (input_index, stack) in stacks {
@@ -84,8 +84,11 @@ impl SakeWitnessCarrier for TxOut {
         }
 
         let mut version_data = [0u8; 1];
-        if cursor.read_exact(&mut version_data).is_err() || version_data[0] != EXPECTED_VERSION {
-            return Err(WitnessCarrierError::WrongVersion);
+        if cursor.read_exact(&mut version_data).is_err() {
+            return Err(WitnessCarrierError::MissingVersion);
+        }
+        if version_data[0] > MAX_SUPPORTED_VERSION_VERSION {
+            return Err(WitnessCarrierError::UnsupportedVersion);
         }
 
         // --- Parse Stacks ---
@@ -130,7 +133,8 @@ impl SakeWitnessCarrier for TxOut {
 pub enum WitnessCarrierError {
     NotOpReturn,
     MissingPrefix,
-    WrongVersion,
+    MissingVersion,
+    UnsupportedVersion,
     InvalidStacksCount,
     InvalidInputIndex,
     InvalidElementsCount,
