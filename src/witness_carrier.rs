@@ -6,8 +6,6 @@ use bitcoin::{
 };
 use std::io::{Cursor, Read}; // Added necessary imports
 
-use crate::error::WitnessCarrierError;
-
 const PREFIX: &[u8] = b"SAKE";
 const EXPECTED_VERSION: u8 = 0;
 
@@ -126,6 +124,17 @@ impl SakeWitnessCarrier for TxOut {
 
         Ok(witness_stacks)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WitnessCarrierError {
+    NotOpReturn,
+    MissingPrefix,
+    WrongVersion,
+    InvalidStacksCount,
+    InvalidInputIndex,
+    InvalidElementsCount,
+    InvalidElement,
 }
 
 #[cfg(test)]

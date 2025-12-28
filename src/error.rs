@@ -1,6 +1,6 @@
 use bitcoin::{blockdata::script, sighash::TaprootError};
 
-use crate::exec::Stack;
+use crate::{exec::Stack, witness_carrier::WitnessCarrierError};
 
 /// Error of a script execution.
 ///
@@ -41,17 +41,6 @@ pub enum ExecError {
     TxHash(&'static str),
 
     NoMoreInstructions { success: bool },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WitnessCarrierError {
-    NotOpReturn,
-    MissingPrefix,
-    WrongVersion,
-    InvalidStacksCount,
-    InvalidInputIndex,
-    InvalidElementsCount,
-    InvalidElement,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

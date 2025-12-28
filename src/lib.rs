@@ -37,12 +37,14 @@ use bitcoin::{
 
 mod error;
 mod exec;
+mod script_encoding;
 mod stack;
 mod witness_carrier;
 
 use exec::Exec;
 
 pub use error::Error;
+pub use script_encoding::{EncodingScriptError, TryIntoSakeScript};
 pub use witness_carrier::SakeWitnessCarrier;
 
 pub use exec::op_csfsv::{OP_CHECKSIGFROMSTACKVERIFY, OP_CSFSV};
@@ -240,7 +242,7 @@ mod tests {
     use bitcoin_script::{define_pushable, script};
 
     use crate::{
-        Error, OP_CHECKSIGFROMSTACKVERIFY, OP_CTV, SakeWitnessCarrier,
+        Error, OP_CHECKSIGFROMSTACKVERIFY, OP_CTV, SakeWitnessCarrier, TryIntoSakeScript,
         exec::op_ctv::calculate_txhash, validate, validate_and_sign, validate_no_sake,
     };
 
@@ -426,6 +428,8 @@ mod tests {
 
             { 1 }
         }
+        .try_into_sake_script(&[], 0)
+        .unwrap()
     }
 
     #[test]
@@ -456,14 +460,11 @@ mod tests {
             OP_CSV
             OP_DROP
 
-            OP_IF
-                { sake_script } // Emulate a SAKE script with SAKE opcodes
-            OP_ELSE
-                // In practice you would check oracles signatures here
-                // with OP_CHECKSIG or OP_CHECKSIGADD.
-                { b"legacy".to_vec() }
-                OP_EQUAL
-            OP_ENDIF
+            { sake_script } // Emulate a SAKE script with SAKE opcodes
+            // In practice you would check oracles signatures here
+            // with OP_CHECKSIG or OP_CHECKSIGADD.
+            { b"legacy".to_vec() }
+            OP_EQUAL
         };
 
         //  Enable SAKE script by passing an OP_1
