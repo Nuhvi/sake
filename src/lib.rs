@@ -44,11 +44,13 @@ mod witness_carrier;
 use exec::Exec;
 
 pub use error::Error;
-pub use script_encoding::{EncodingScriptError, TryIntoSakeScript};
+pub use script_encoding::TryIntoSakeScript;
 pub use witness_carrier::SakeWitnessCarrier;
 
 pub use exec::op_csfsv::{OP_CHECKSIGFROMSTACKVERIFY, OP_CSFSV};
 pub use exec::op_ctv::*;
+
+use crate::script_encoding::extract_encoded_scripts;
 
 /// Validates SAKE scripts in a transaction.
 ///
@@ -160,6 +162,18 @@ fn validate_inner<'a>(
         return Err(Error::NoInputs);
     }
 
+    let inputs: Vec<_> = extract_encoded_scripts(inputs).map_err(Error::InvalidScriptEncoding)?;
+
+    if inputs.is_empty() {
+        // If the transaction is not encumbered by SAKE scripts at all,
+        // no need to validate it.
+        //
+        // This is useful in the case of slashable bonds, if the oracle
+        // key is used to sign other things than SAKE transactions, for
+        // example an Arcade script.
+        return Ok(());
+    }
+
     let last_output = tx.output.pop();
 
     // Step 1: Extract witness stacks from the last output if it's OP_RETURN
@@ -241,12 +255,12 @@ mod tests {
 
     use bitcoin_script::{define_pushable, script};
 
+    define_pushable!();
+
     use crate::{
         Error, OP_CHECKSIGFROMSTACKVERIFY, OP_CTV, SakeWitnessCarrier, TryIntoSakeScript,
         exec::op_ctv::calculate_txhash, validate, validate_and_sign, validate_no_sake,
     };
-
-    define_pushable!();
 
     pub fn dummy_tx() -> (Transaction, Vec<TxOut>) {
         let dummy_tx = Transaction {
@@ -460,11 +474,7 @@ mod tests {
             OP_CSV
             OP_DROP
 
-            { sake_script } // Emulate a SAKE script with SAKE opcodes
-            // In practice you would check oracles signatures here
-            // with OP_CHECKSIG or OP_CHECKSIGADD.
-            { b"legacy".to_vec() }
-            OP_EQUAL
+            { sake_script } // Emulate a SAKE
         };
 
         //  Enable SAKE script by passing an OP_1
