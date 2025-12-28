@@ -162,6 +162,7 @@ fn validate_inner<'a>(
         return Err(Error::NoInputs);
     }
 
+    // Step 1: Extract encoded input scripts
     let inputs: Vec<_> = extract_encoded_scripts(inputs).map_err(Error::InvalidScriptEncoding)?;
 
     if inputs.is_empty() {
@@ -176,7 +177,7 @@ fn validate_inner<'a>(
 
     let last_output = tx.output.pop();
 
-    // Step 1: Extract witness stacks from the last output if it's OP_RETURN
+    // Step 2: Extract witness stacks from the last output if it's OP_RETURN
     let witness_stacks = if let Some(last_output) = last_output {
         last_output
             .parse_witness_stacks()
@@ -185,7 +186,7 @@ fn validate_inner<'a>(
         vec![]
     };
 
-    // Step 2: Validate count
+    // Step 3: Validate count
     if witness_stacks.len() != inputs.len() {
         return Err(Error::WitnessCountMismatch {
             expected: inputs.len(),
@@ -195,12 +196,12 @@ fn validate_inner<'a>(
 
     // SighashCache from the transaction without the witness stack.
     //
-    // This is because the witness stack may include a TXHASH that
-    // can't be created from the transaction with the witness carrier,
-    // since the circular dependency
+    // This is because the witness stack may include an introspection of
+    // transaction outputs and expects a specific number of outputs and
+    // or script pubkeys that wouldn't match after adding the witness carrier
     let mut sighashcache = SighashCache::new(tx.clone());
 
-    // Step 3: Execute each input script with its witness
+    // Step 4: Execute each input script with its witness
     for ((input_idx, script), (witness_index, witness_stack)) in inputs.iter().zip(witness_stacks) {
         if *input_idx != witness_index {
             return Err(Error::WitnessIndexesMismatch {
