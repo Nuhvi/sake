@@ -48,6 +48,7 @@ pub use script_encoding::EncodeSakeScript;
 pub use witness_carrier::SakeWitnessCarrier;
 
 pub use exec::op_csfs::{OP_CHECKSIGFROMSTACK, OP_CSFS};
+pub use exec::op_th::{OP_TEMPLATEHASH, OP_TH};
 
 use crate::script_encoding::extract_encoded_scripts;
 

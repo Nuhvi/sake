@@ -2,6 +2,8 @@
 
 use bitcoin::{Opcode, ScriptBuf, opcodes::all::OP_RETURN_204, secp256k1::Message};
 
+use crate::{Exec, exec::ExecError};
+
 pub(crate) const OP_CODE: Opcode = OP_RETURN_204;
 
 #[allow(non_snake_case)]
@@ -12,8 +14,6 @@ pub fn OP_CHECKSIGFROMSTACK() -> ScriptBuf {
 pub fn OP_CSFS() -> ScriptBuf {
     OP_CHECKSIGFROMSTACK()
 }
-
-use crate::{Exec, exec::ExecError};
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_csfs(&mut self) -> Result<(), ExecError> {

@@ -18,9 +18,14 @@ let emulated_locking_script: ScriptBuf = script! {
     "hello world"> OP_EQUALVERIFY
 
     // OP_CHECKSIGFROMSTACK (bip-348)
-    { pk }
+    <pk>
     OP_CHECKSIGFROMSTACK
     OP_VERIFY
+
+    // OP_TEMPLATEHASH (bip-?)
+    OP_TEMPLATEHASH
+    <template_hash>
+    OP_EQUALVERIFY
 
     { 1 }
 }
@@ -64,8 +69,8 @@ let emulation_witness = vec![
 // they validate they emulation witness.
 let taproot_witness = vec![
     // Two of 3 oracles' signatures
-    { oracle_1_signature.to_vec() }
-    { oracle_2_signature.to_vec() }
+    oracle_1_signature.to_vec(),
+    oracle_2_signature.to_vec(),
 
     // .. script and control block..
 ];

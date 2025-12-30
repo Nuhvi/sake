@@ -4,8 +4,8 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::{Hash, HashEngine, sha256};
 
-use bitcoin::Opcode;
 use bitcoin::opcodes::all::OP_RETURN_206;
+use bitcoin::{Opcode, ScriptBuf};
 
 use crate::exec::{Exec, ExecError};
 
@@ -14,7 +14,16 @@ const TEMPLATEHASH_TAG: &[u8; 32] = &[
     88, 97, 111, 217, 2, 44, 34, 237, 220, 171, 121,
 ];
 
-pub(crate) const OP_CODE: Opcode = OP_RETURN_206;
+pub const OP_CODE: Opcode = OP_RETURN_206;
+
+#[allow(non_snake_case)]
+pub fn OP_TEMPLATEHASH() -> ScriptBuf {
+    ScriptBuf::from_bytes(vec![OP_CODE.to_u8()])
+}
+#[allow(non_snake_case)]
+pub fn OP_TH() -> ScriptBuf {
+    OP_TEMPLATEHASH()
+}
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_th(&mut self) -> Result<(), ExecError> {
@@ -26,6 +35,7 @@ impl<'a> Exec<'a> {
         );
 
         self.stack.pushstr(template_hash.as_byte_array());
+        dbg!(&self.stack, template_hash);
 
         Ok(())
     }
@@ -84,6 +94,11 @@ mod tests {
 
     use bitcoin::{ScriptBuf, TxOut, consensus::deserialize, sighash::SighashCache};
     use serde::Deserialize;
+
+    use bitcoin_script::{define_pushable, script};
+    define_pushable!();
+
+    use crate::tests::validate_single_script;
 
     use super::*;
 
@@ -165,5 +180,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_valid_templatehash() {
+        let templatehash =
+            hex::decode("e59457bfc8e4493279a98ec1efc7cc29506440a5490a28fe0737b34dd458e258")
+                .unwrap();
+
+        let script = script! {
+            OP_TEMPLATEHASH
+            <templatehash>
+            OP_EQUALVERIFY
+            < 1 >
+        };
+        let witness = vec![];
+
+        validate_single_script(script, witness).unwrap();
+    }
+
+    #[test]
+    fn test_invalid_templatehash() {
+        let templatehash =
+            hex::decode("e59457bfc8e4493279a98ec1efc7cc29506440a5490a28fe0737b34dd458e259")
+                .unwrap();
+
+        let script = script! {
+            OP_TEMPLATEHASH
+            <templatehash>
+            OP_EQUALVERIFY
+            < 1 >
+        };
+        let witness = vec![];
+
+        assert!(validate_single_script(script, witness).is_err());
     }
 }
