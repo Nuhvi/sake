@@ -29,33 +29,34 @@ mod tests {
     #[test]
     fn test_op_cat_success() {
         let script = script! {
-            {b"hello ".to_vec()}
-            {b"world".to_vec()}
+            <"world">
             OP_CAT
-            {b"hello world".to_vec()}
+            <"hello world">
             OP_EQUAL
         };
+        let witness = vec![b"hello ".to_vec()];
 
-        validate_single_script(script, vec![]).unwrap();
+        validate_single_script(script, witness).unwrap();
     }
 
     #[test]
     fn test_op_cat_empty_strings() {
         // Test with one empty string
         let script = script! {
-            <"bitcoin"> <""> OP_CAT
+            <""> OP_CAT
             <"bitcoin"> OP_EQUAL
         };
 
-        validate_single_script(script, vec![]).unwrap();
+        validate_single_script(script, vec![b"bitcoin".to_vec()]).unwrap();
 
         // Test with two empty strings
         let script = script! {
-            <""> <""> OP_CAT
+            <""> OP_CAT
             <""> OP_EQUAL
         };
+        let witness = vec![vec![]];
 
-        validate_single_script(script, vec![]).unwrap();
+        validate_single_script(script, witness).unwrap();
     }
 
     #[test]
@@ -65,12 +66,13 @@ mod tests {
         let x2 = b"b".repeat(260);
 
         let script = script! {
-            <x1> <x2> OP_CAT
+            <x2> OP_CAT
             OP_DROP
             < 1 >
         };
+        let witness = vec![x1];
 
-        validate_single_script(script, vec![]).unwrap();
+        validate_single_script(script, witness).unwrap();
     }
 
     #[test]
@@ -80,12 +82,13 @@ mod tests {
         let x2 = b"b".repeat(261);
 
         let script = script! {
-            <x1> <x2> OP_CAT
+            <x2> OP_CAT
             OP_DROP
             < 1 >
         };
+        let witness = vec![x1];
 
-        let result = validate_single_script(script, vec![]);
+        let result = validate_single_script(script, witness);
 
         assert!(matches!(result, Err(Error::Exec(ExecError::PushSize))))
     }
@@ -98,8 +101,9 @@ mod tests {
             OP_DROP
             < 1 >
         };
+        let witness = vec![];
 
-        let result = validate_single_script(script, vec![]);
+        let result = validate_single_script(script, witness);
         assert!(matches!(
             result,
             Err(Error::Exec(ExecError::InvalidStackOperation))
