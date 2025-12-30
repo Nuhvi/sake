@@ -2,23 +2,19 @@
 
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::consensus::Encodable;
-use bitcoin::hashes::{Hash, HashEngine, sha256, sha256t_hash_newtype};
+use bitcoin::hashes::{Hash, HashEngine, sha256};
 
 use bitcoin::Opcode;
 use bitcoin::opcodes::all::OP_RETURN_206;
 
 use crate::exec::{Exec, ExecError};
 
+const TEMPLATEHASH_TAG: &[u8; 32] = &[
+    3, 143, 106, 237, 22, 145, 102, 179, 91, 137, 70, 69, 51, 154, 120, 68, 137, 218, 168, 84, 99,
+    88, 97, 111, 217, 2, 44, 34, 237, 220, 171, 121,
+];
+
 pub(crate) const OP_CODE: Opcode = OP_RETURN_206;
-
-sha256t_hash_newtype! {
-    /// TemplateHashTag for OP_TEMPLATEHASH
-    pub struct TemplateHashTag = hash_str("TemplateHash");
-
-    /// A template hash
-    #[hash_newtype(forward)]
-    struct TemplateHashHash(_);
-}
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_th(&mut self) -> Result<(), ExecError> {
@@ -35,12 +31,6 @@ impl<'a> Exec<'a> {
     }
 }
 
-fn template_hash_tag() -> sha256::Hash {
-    let mut engine = sha256::Hash::engine();
-    engine.input(b"TemplateHash");
-    sha256::Hash::from_engine(engine)
-}
-
 fn calculate_template_hash(
     tx: &Transaction,
     input_index: usize,
@@ -49,9 +39,8 @@ fn calculate_template_hash(
     let mut engine = sha256::Hash::engine();
 
     // 1. Add Tagged Hash prefix
-    let tag = template_hash_tag();
-    engine.input(&tag[..]);
-    engine.input(&tag[..]);
+    engine.input(TEMPLATEHASH_TAG);
+    engine.input(TEMPLATEHASH_TAG);
 
     // 2. Transaction Data
     engine.input(&tx.version.0.to_le_bytes());
@@ -91,4 +80,90 @@ fn calculate_template_hash(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+
+    use bitcoin::{ScriptBuf, TxOut, consensus::deserialize, sighash::SighashCache};
+    use serde::Deserialize;
+
+    use super::*;
+
+    #[derive(Deserialize)]
+    struct TestVector {
+        spent_outputs: Vec<String>,
+        spending_tx: String,
+        input_index: usize,
+        // expected_template_hash: String,
+        valid: bool,
+        comment: String,
+    }
+
+    #[test]
+    fn test_op_templatehash_basic() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/exec/sake_opcodes/op_th/basic.json");
+        let file = std::fs::read(path).unwrap();
+
+        let vectors: Vec<TestVector> =
+            serde_json::from_slice(&file).expect("Failed to parse test vectors JSON");
+
+        for (i, tv) in vectors.iter().enumerate() {
+            println!("Running test {}: {}", i, tv.comment);
+
+            // Parse spending transaction
+            let tx_bytes = hex::decode(&tv.spending_tx).expect("Invalid spending_tx hex");
+            let tx: Transaction = deserialize(&tx_bytes).expect("Failed to parse spending_tx");
+
+            let mut prevouts = vec![];
+
+            // Parse spent_outputs (not strictly needed for hash, but good for validation)
+            for (j, out_hex) in tv.spent_outputs.iter().enumerate() {
+                let out_bytes = hex::decode(out_hex).expect("Invalid spent_outputs hex");
+                let txout: TxOut = deserialize(&out_bytes).unwrap_or_else(|_| {
+                    panic!("Failed to parse spent_outputs[{i}] in test {j}");
+                });
+                prevouts.push(txout);
+            }
+
+            // Extract witness for the input
+            assert!(tv.input_index < tx.input.len(), "input_index out of bounds");
+            let witness = &tx.input[tv.input_index].witness;
+
+            // Ignore annex vectors
+            if witness.len() >= 2 {
+                let last = witness.last().unwrap();
+                if !last.is_empty() && last[0] == 0x50 {
+                    continue;
+                }
+            };
+
+            let basic_script = ScriptBuf::from_bytes(witness.to_vec().first().cloned().unwrap());
+
+            let mut sighashcache = SighashCache::new(tx);
+
+            let mut exec = Exec::new(
+                &mut sighashcache,
+                &prevouts,
+                tv.input_index,
+                // The basic script
+                &basic_script,
+                // no witness in basic scripts
+                vec![],
+            )
+            .unwrap();
+
+            loop {
+                match exec.exec_next() {
+                    Ok(_) => continue,
+                    Err(err) => {
+                        if tv.valid {
+                            assert_eq!(err, ExecError::NoMoreInstructions { success: true });
+                        } else {
+                            assert_eq!(err, ExecError::NoMoreInstructions { success: false });
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
