@@ -195,7 +195,7 @@ mod tests {
         // #[serde(rename = "final")]
         // pub is_final: bool,
         pub success: WitnessData,
-        // pub failure: Option<WitnessData>,
+        pub failure: Option<WitnessData>,
     }
 
     #[derive(Deserialize, Debug, Clone)]
@@ -233,77 +233,124 @@ mod tests {
             // Extract witness for the input
             assert!(tv.input_index < tx.input.len(), "input_index out of bounds");
 
-            let witness = tv
-                .success
-                .witness
-                .iter()
-                .map(|e| hex::decode(e).unwrap())
-                .collect::<Vec<_>>();
-
-            // Ignore annex vectors
-            if witness.len() >= 2 {
-                let last = witness.last().unwrap();
-                if !last.is_empty() && last[0] == 0x50 {
-                    continue;
-                }
-            };
-
-            // For some reason these test vectors don't have control block
-            let script_index = if prevouts[tv.input_index].script_pubkey.is_p2tr() {
-                witness.len().checked_sub(2).unwrap_or_default()
-            } else {
-                // segwit
-                witness.len().checked_sub(1).unwrap_or_default()
-            };
-
-            let script = ScriptBuf::from_bytes(if witness.is_empty() {
-                vec![]
-            } else {
-                witness[script_index].clone()
-            });
-            let witness_stack = witness[0..script_index].to_vec();
-
             let mut sighashcache = SighashCache::new(tx);
 
-            let mut exec = Exec::new(
-                &mut sighashcache,
-                &prevouts,
-                tv.input_index,
-                // The basic script
-                &script,
-                witness_stack,
-            )
-            .unwrap();
+            // Success
+            {
+                let witness = tv
+                    .success
+                    .witness
+                    .iter()
+                    .map(|e| hex::decode(e).unwrap())
+                    .collect::<Vec<_>>();
 
-            loop {
-                match exec.exec_next() {
-                    Ok(_) => continue,
-                    Err(err) => {
-                        if tv.comment == "discouraged_template/emptystack" {
-                            // returns an empty stack
-                            assert_eq!(err, ExecError::NoMoreInstructions { success: false });
-                        } else if script.is_empty() && witness.is_empty() {
-                            assert_eq!(err, ExecError::NoMoreInstructions { success: false });
-                        } else {
-                            assert_eq!(err, ExecError::NoMoreInstructions { success: true });
+                // Ignore annex vectors
+                if witness.len() >= 2 {
+                    let last = witness.last().unwrap();
+                    if !last.is_empty() && last[0] == 0x50 {
+                        continue;
+                    }
+                };
+
+                // For some reason these test vectors don't have control block
+                let script_index = if prevouts[tv.input_index].script_pubkey.is_p2tr() {
+                    witness.len().checked_sub(2).unwrap_or_default()
+                } else {
+                    // segwit
+                    witness.len().checked_sub(1).unwrap_or_default()
+                };
+
+                let script = ScriptBuf::from_bytes(if witness.is_empty() {
+                    vec![]
+                } else {
+                    witness[script_index].clone()
+                });
+                let witness_stack = witness[0..script_index].to_vec();
+
+                let mut exec = Exec::new(
+                    &mut sighashcache,
+                    &prevouts,
+                    tv.input_index,
+                    // The basic script
+                    &script,
+                    witness_stack,
+                )
+                .unwrap();
+
+                loop {
+                    match exec.exec_next() {
+                        Ok(_) => continue,
+                        Err(err) => {
+                            if tv.comment == "discouraged_template/emptystack" {
+                                // returns an empty stack
+                                assert_eq!(err, ExecError::NoMoreInstructions { success: false });
+                            } else if script.is_empty() && witness.is_empty() {
+                                assert_eq!(err, ExecError::NoMoreInstructions { success: false });
+                            } else {
+                                assert_eq!(err, ExecError::NoMoreInstructions { success: true });
+                            }
+                            break;
                         }
-                        break;
                     }
                 }
             }
 
-            // TODO: test failure case
-            // let failure_witness = if let Some(failure) = tv.failure.clone() {
-            //     Some(
-            //         failure
-            //             .witness
-            //             .iter()
-            //             .map(|e| hex::decode(e).unwrap())
-            //             .collect::<Vec<_>>(),
-            //     )
-            // } else {
-            //     None
-            // };
+            // Failure
+            if let Some(failure) = tv.failure.clone() {
+                let witness = failure
+                    .witness
+                    .iter()
+                    .map(|e| hex::decode(e).unwrap())
+                    .collect::<Vec<_>>();
+
+                // Ignore annex vectors
+                if witness.len() >= 2 {
+                    let last = witness.last().unwrap();
+                    if !last.is_empty() && last[0] == 0x50 {
+                        continue;
+                    }
+                };
+
+                // For some reason these test vectors don't have control block
+                let script_index = if prevouts[tv.input_index].script_pubkey.is_p2tr() {
+                    witness.len().checked_sub(2).unwrap_or_default()
+                } else {
+                    // segwit
+                    witness.len().checked_sub(1).unwrap_or_default()
+                };
+
+                let script = ScriptBuf::from_bytes(if witness.is_empty() {
+                    vec![]
+                } else {
+                    witness[script_index].clone()
+                });
+                let witness_stack = witness[0..script_index].to_vec();
+
+                let mut exec = Exec::new(
+                    &mut sighashcache,
+                    &prevouts,
+                    tv.input_index,
+                    // The basic script
+                    &script,
+                    witness_stack,
+                )
+                .unwrap();
+
+                loop {
+                    match exec.exec_next() {
+                        Ok(_) => continue,
+                        Err(err) => {
+                            if tv.comment == "template/32bytes" {
+                                assert_eq!(err, ExecError::EqualVerify);
+                            } else {
+                                assert_eq!(err, ExecError::NoMoreInstructions { success: false });
+                            }
+
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
