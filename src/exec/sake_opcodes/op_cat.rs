@@ -1,3 +1,5 @@
+//! OP_CAT [BIP 347](https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki)
+
 use bitcoin::constants::MAX_SCRIPT_ELEMENT_SIZE;
 
 use crate::{Exec, exec::ExecError};

@@ -1,4 +1,4 @@
-// A NOP compatible version of OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
+//! OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
 
 use bitcoin::{Opcode, ScriptBuf, opcodes::all::OP_RETURN_204, secp256k1::Message};
 

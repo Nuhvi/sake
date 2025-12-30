@@ -16,9 +16,11 @@ mod op_checksig;
 mod sake_opcodes {
     pub mod op_cat;
     pub mod op_csfs;
+    pub mod op_th;
 }
 
 pub use sake_opcodes::op_csfs;
+pub use sake_opcodes::op_th;
 
 /// Maximum number of bytes pushable to the stack
 const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
@@ -166,6 +168,14 @@ impl<'a> Exec<'a> {
 
         // Remember to leave stack intact until all errors have occurred.
         match op {
+            // SAKE opcodes
+            // bip-347
+            OP_CAT => self.handle_op_cat()?,
+            // bip-348
+            op_csfs::OP_CODE => self.handle_op_csfs()?,
+            // bip-(?) [bip-templatehash](https://github.com/bitcoin/bips/blob/267932a0cc7f810c961f17a3f5a70938a0fd35dd/bip-templatehash.md)
+            op_th::OP_CODE => self.handle_op_th()?,
+
             //
             // Push value
             OP_PUSHNUM_NEG1 | OP_PUSHNUM_1 | OP_PUSHNUM_2 | OP_PUSHNUM_3 | OP_PUSHNUM_4
@@ -181,9 +191,6 @@ impl<'a> Exec<'a> {
             | OP_NOP10 => {
                 // nops
             }
-
-            // A NOP compatible version of OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
-            op_csfs::OP_CODE => self.handle_op_csfs()?,
 
             //
             // Control
@@ -388,8 +395,6 @@ impl<'a> Exec<'a> {
                 self.stack.push(x1);
                 self.stack.push(x2);
             }
-
-            OP_CAT => self.handle_op_cat()?,
 
             OP_SIZE => {
                 // (in -- in size)
