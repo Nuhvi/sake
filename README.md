@@ -68,13 +68,14 @@ let locking_script = script!{
 
 ```
 
-## Limitations
+## Limitations of the emulated script
 
 - Only Taproot
 - Only minimally encoded instructions
-- No `Annex`
-- `OP_CODESEPARATOR` is disabled
-- `OP_CTLV` and `OP_CSV` are nops
+- `Annex` is not allowed
+- `OP_CODESEPARATOR` is disabled (nop)
+- `OP_CTLV` and `OP_CSV` are nops 
+- `OP_SUCCESSX` causes the emulated script to fail instead of succeed
 
 ## Acknowledgment
 
