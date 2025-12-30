@@ -39,10 +39,6 @@ pub use bip_0346::{
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_ctv(&mut self) -> Result<(), ExecError> {
-        if !self.supports_sake {
-            return Ok(());
-        }
-
         // 1. Requirement: At least one element on the stack
         self.stack.needn(1)?;
 

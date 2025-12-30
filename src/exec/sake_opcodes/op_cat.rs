@@ -4,11 +4,6 @@ use crate::{Exec, exec::ExecError};
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_cat(&mut self) -> Result<(), ExecError> {
-        // Nop
-        if !self.supports_sake {
-            return Ok(());
-        }
-
         // (x1 x2 -- x1|x2)
         self.stack.needn(2)?;
         let x2 = self.stack.popstr()?;
@@ -48,22 +43,16 @@ mod tests {
     fn test_op_cat_empty_strings() {
         // Test with one empty string
         let script = script! {
-            {b"bitcoin".to_vec()}
-            {b"".to_vec()}
-            OP_CAT
-            {b"bitcoin".to_vec()}
-            OP_EQUAL
+            <"bitcoin"> <""> OP_CAT
+            <"bitcoin"> OP_EQUAL
         };
 
         validate_single_script(script, vec![]).unwrap();
 
         // Test with two empty strings
         let script = script! {
-            {b"".to_vec()}
-            {b"".to_vec()}
-            OP_CAT
-            {b"".to_vec()}
-            OP_EQUAL
+            <""> <""> OP_CAT
+            <""> OP_EQUAL
         };
 
         validate_single_script(script, vec![]).unwrap();
@@ -76,11 +65,9 @@ mod tests {
         let x2 = b"b".repeat(260);
 
         let script = script! {
-            {x1}
-            {x2}
-            OP_CAT
+            <x1> <x2> OP_CAT
             OP_DROP
-            { 1 }
+            < 1 >
         };
 
         validate_single_script(script, vec![]).unwrap();
@@ -93,11 +80,9 @@ mod tests {
         let x2 = b"b".repeat(261);
 
         let script = script! {
-            {x1}
-            {x2}
-            OP_CAT
+            <x1> <x2> OP_CAT
             OP_DROP
-            { 1 }
+            < 1 >
         };
 
         let result = validate_single_script(script, vec![]);
@@ -109,10 +94,9 @@ mod tests {
     fn test_op_cat_stack_underflow() {
         // Only 1 element on stack
         let script = script! {
-            {b"lonely".to_vec()}
-            OP_CAT
+            <"lonely"> OP_CAT
             OP_DROP
-            { 1 }
+            < 1 >
         };
 
         let result = validate_single_script(script, vec![]);

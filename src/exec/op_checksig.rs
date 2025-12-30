@@ -232,7 +232,7 @@ mod tests {
         // Validate
 
         let mut sighashcache = SighashCache::new(tx);
-        let mut exec = Exec::new(&mut sighashcache, &prevouts, 0, &script, witness, true).unwrap();
+        let mut exec = Exec::new(&mut sighashcache, &prevouts, 0, &script, witness).unwrap();
 
         loop {
             match exec.exec_next() {

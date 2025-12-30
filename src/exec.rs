@@ -36,8 +36,6 @@ const VALIDATION_WEIGHT_PER_SIGOP_PASSED: i64 = 50;
 
 /// Partial execution of a script.
 pub struct Exec<'a> {
-    supports_sake: bool,
-
     prevouts: &'a [TxOut],
     input_idx: usize,
     leaf_hash: TapLeafHash,
@@ -63,8 +61,6 @@ impl<'a> Exec<'a> {
         input_idx: usize,
         script: &'a Script,
         script_witness: Vec<Vec<u8>>,
-
-        supports_sake: bool,
     ) -> Result<Exec<'a>, Error> {
         // We want to make sure the script is valid so we don't have to throw parsing errors
         // while executing.
@@ -84,8 +80,6 @@ impl<'a> Exec<'a> {
         );
 
         Ok(Exec {
-            supports_sake,
-
             prevouts,
             input_idx,
             leaf_hash,

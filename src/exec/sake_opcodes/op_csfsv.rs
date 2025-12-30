@@ -17,11 +17,6 @@ use crate::{Exec, exec::ExecError};
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_csfsv(&mut self) -> Result<(), ExecError> {
-        // Nop
-        if !self.supports_sake {
-            return Ok(());
-        }
-
         // BIP 348 requires 3 elements
         self.stack.needn(3)?;
 

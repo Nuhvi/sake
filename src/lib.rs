@@ -64,7 +64,7 @@ pub fn validate(
     prevouts: &[TxOut],
     inputs: &[(usize, ScriptBuf)],
 ) -> Result<(), Error> {
-    validate_inner(&mut tx.clone(), prevouts, inputs, true)
+    validate_inner(&mut tx.clone(), prevouts, inputs)
 }
 
 /// Validates SAKE scripts in a transaction and return signatures over
@@ -106,7 +106,7 @@ pub fn validate_and_sign_with_secp(
     let original_tx = tx.clone();
     let mut emulated_tx = tx.clone();
 
-    validate_inner(&mut emulated_tx, prevouts, inputs, true)?;
+    validate_inner(&mut emulated_tx, prevouts, inputs)?;
 
     let mut signatures = Vec::with_capacity(inputs.len());
 
@@ -136,27 +136,10 @@ pub fn validate_and_sign_with_secp(
     Ok(signatures)
 }
 
-/// Validates scripts in a transaction with _NO_ support for SAKE scripts.
-///
-/// - `tx`: The transaction (used to calculate the sighash) and the last output contains the script witnesses as an OP_RETURN
-/// - `prevouts`: All the previous [TxOut]s for all the inputs (used to calculate the sighash).
-/// - `scripts` : Tuples of (`input index`, `ScriptBuf`) for the inputs to evaluate.
-///     - `input_index`: used in sighash calculation.
-///     - `ScriptBuf`: locking script for this input, evaluated with the respective script witness defcoded from the last [TxOut] (`OP_RETURN`) in the `tx`.
-pub fn validate_no_sake(
-    tx: &Transaction,
-    prevouts: &[TxOut],
-    inputs: &[(usize, ScriptBuf)],
-) -> Result<(), Error> {
-    validate_inner(&mut tx.clone(), prevouts, inputs, false)
-}
-
 fn validate_inner<'a>(
     tx: &mut Transaction,
     prevouts: &'a [TxOut],
     inputs: &'a [(usize, ScriptBuf)],
-
-    supports_sake: bool,
 ) -> Result<(), Error> {
     if inputs.is_empty() {
         return Err(Error::NoInputs);
@@ -166,6 +149,8 @@ fn validate_inner<'a>(
     let inputs: Vec<_> = extract_encoded_scripts(inputs).map_err(Error::InvalidScriptEncoding)?;
 
     if inputs.is_empty() {
+        // TODO: add tests for this
+
         // If the transaction is not encumbered by SAKE scripts at all,
         // no need to validate it.
         //
@@ -216,7 +201,6 @@ fn validate_inner<'a>(
             *input_idx,
             script,
             witness_stack,
-            supports_sake,
         )?;
 
         loop {
@@ -245,6 +229,8 @@ fn validate_inner<'a>(
 #[cfg(test)]
 mod tests {
 
+    use std::str::FromStr;
+
     use bitcoin::{
         Amount, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness, XOnlyPublicKey,
         hashes::Hash,
@@ -258,10 +244,7 @@ mod tests {
 
     define_pushable!();
 
-    use crate::{
-        Error, OP_CHECKSIGFROMSTACKVERIFY, OP_CTV, SakeWitnessCarrier, TryIntoSakeScript,
-        exec::op_ctv::calculate_txhash, validate, validate_and_sign, validate_no_sake,
-    };
+    use crate::{Error, SakeWitnessCarrier, TryIntoSakeScript, validate, validate_and_sign};
 
     pub fn dummy_tx() -> (Transaction, Vec<TxOut>) {
         let dummy_tx = Transaction {
@@ -384,19 +367,24 @@ mod tests {
         (dummy_tx, prevouts)
     }
 
-    pub fn validate_single_script(script: ScriptBuf, witness: Vec<Vec<u8>>) -> Result<(), Error> {
-        let (dummy_tx, prevouts) = dummy_tx_with_witness_carrier(witness);
-
-        validate(&dummy_tx, &prevouts, &[(0, script)])
-    }
-
-    pub fn validate_single_script_no_sake_support(
-        script: ScriptBuf,
+    pub fn validate_single_script(
+        emulated_script: ScriptBuf,
         witness: Vec<Vec<u8>>,
     ) -> Result<(), Error> {
         let (dummy_tx, prevouts) = dummy_tx_with_witness_carrier(witness);
 
-        validate_no_sake(&dummy_tx, &prevouts, &[(0, script)])
+        let script = script! {
+            {
+                emulated_script.try_into_sake_script(
+                    &[
+                        XOnlyPublicKey::from_str("18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166").unwrap()
+                    ],
+                    0
+                ).unwrap()
+            }
+        };
+
+        validate(&dummy_tx, &prevouts, &[(0, script)])
     }
 
     /// Returns (pk, msg, sig) bytes
@@ -412,82 +400,6 @@ mod tests {
         let sig = secp.sign_schnorr(&msg, &keypair);
 
         (pk, msg_bytes, sig.serialize())
-    }
-
-    fn sake_script(pk: XOnlyPublicKey) -> ScriptBuf {
-        // Tx without the witness carrier
-        let (tx, prevouts) = dummy_tx();
-
-        script! {
-            // Test OP_CAT
-            { b"world".to_vec() }
-            OP_CAT
-            { b"hello world".to_vec() }
-            OP_EQUALVERIFY
-
-            // Test OP_CHECKTXHASHVERIFY
-            {
-                calculate_txhash(&[], &tx, &prevouts, 0, None)
-                .unwrap()
-                .to_byte_array()
-                .to_vec()
-            }
-            OP_CTV
-            OP_DROP
-
-            // Test OP_CHECKSIGFROMSTACKVERIFY
-            { pk }
-            OP_CHECKSIGFROMSTACKVERIFY
-            OP_2DROP
-            OP_DROP
-
-            { 1 }
-        }
-        .try_into_sake_script(&[], 0)
-        .unwrap()
-    }
-
-    #[test]
-    fn test_op_activated_fail() {
-        let secp = Secp256k1::new();
-
-        let (pk, msg, sig) = mock_signed_message(&secp);
-
-        let script = sake_script(pk);
-
-        let witness = vec![sig.to_vec(), msg.to_vec(), b"hello ".to_vec()];
-
-        validate_single_script(script.clone(), witness.clone()).unwrap();
-        assert!(validate_single_script_no_sake_support(script, witness).is_err());
-    }
-
-    #[test]
-    fn test_op_activated_basic() {
-        let secp = Secp256k1::new();
-        let (pk, msg, sig) = mock_signed_message(&secp);
-
-        let sake_script = sake_script(pk);
-
-        let script = script! {
-            // CTLV and CSV are OP_NOPs in the emulator.
-            // So they have to happen before the OP_IF
-            { 100 }
-            OP_CSV
-            OP_DROP
-
-            { sake_script } // Emulate a SAKE
-        };
-
-        //  Enable SAKE script by passing an OP_1
-        validate_single_script(
-            script.clone(),
-            vec![sig.to_vec(), msg.to_vec(), b"hello ".to_vec(), vec![1]],
-        )
-        .expect("valid sak emulation");
-
-        // Disable SAKE script by passing an OP_0 (empty)
-        validate_single_script_no_sake_support(script, vec![b"legacy".to_vec(), vec![]])
-            .expect("valid legacy exec");
     }
 
     #[test]

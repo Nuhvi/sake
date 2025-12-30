@@ -17,62 +17,59 @@ let emulation_witness = vec![
 ];
 
 
-let oracles_witness = vec![
+let taproot_witness = vec![
     // Two of 3 oracles' signatures
     { oracle_1_signature.to_vec() }
     { oracle_2_signature.to_vec() }
 
-    // Disable the emulation clause and
-    // use the oracles clause instead
-    OP_0 
+    // .. script and control block..
 ];
 
 let locking_script = script!{
     // CTLV and CSV are OP_NOPs in the emulator.
     // So they have to happen before the OP_IF
-    { 100 } 
-    OP_CSV
-    OP_DROP
+    100 OP_CSV OP_DROP
 
-    OP_EQUAL
-    OP_IF
-        // Emulate Script Army Knife OpCodes:
+    // SAKE script encoded in the form of:
+    // OP_PUSHBYTES_<len> 
+    //      <4: "SAKE" | 1:VERSION | ..Encoded Emulated Script>
+    // OP_DROP
+    // 
+    // OP_PUSHBYTES_32 <Oracle 1 Pubkey> OP_CHECKSIG
+    // OP_PUSHBYTES_32 <Oracle 2 Pubkey> OP_CHECKSIGADD
+    // OP_PUSHBYTES_32 <Oracle 3 Pubkey> OP_CHECKSIGADD
+    // <threshold> OP_GREATERTHANOREQUAL
+    < 
+        // Emulated script
+        script! {
+            // Emulate Script Army Knife OpCodes:
 
-        // OP_CAT
-        { b"world".to_vec() }
-        OP_CAT
-        { b"hello world".to_vec() }
-        OP_EQUALVERIFY
+            // OP_CAT
+            <"world"> OP_CAT
+            "hello world"> OP_EQUALVERIFY
+
+            // OP_CTV: OP_CHECKTXHASHVERIFY (OP_NOP4)
+            { txhash.to_vec() }
+            OP_CHECKTXHASHVERIFY
+            OP_DROP
+            
+
+            // OP_CSFSV: OP_CHECKSIGFROMSTACKVERIFY (OP_NOP5)
+            { pk }
+            OP_CHECKSIGFROMSTACKVERIFY
+            OP_2DROP
+            OP_DROP
 
 
-        // OP_CTV: OP_CHECKTXHASHVERIFY (OP_NOP4)
-        { txhash.to_vec() }
-        OP_CHECKTXHASHVERIFY
-        OP_DROP
-        
-
-        // OP_CSFSV: OP_CHECKSIGFROMSTACKVERIFY (OP_NOP5)
-        { pk }
-        OP_CHECKSIGFROMSTACKVERIFY
-        OP_2DROP
-        OP_DROP
-
-
-        { 1 }
-    OP_ELSE
-        // Until a soft fork taking over using OP_ACTIVATED (OP_NOP10),
-        // Use OP_CHECKSIG or OP_CHECKSIGADD to verify oracle signatures.
-        { oracle_1_pubkey }
-        OP_CHECKSIG
-        { oracle_2_pubkey }
-        OP_CHECKSIGADD
-        { oracle_3_pubkey }
-        OP_CHECKSIGADD
-        { 2 }
-        OP_GREATERTHANOREQUAL
-
-        { 1 }
-    OP_ENDIF
+            { 1 }
+        }
+        .try_into_sake_script(
+            // Pubkeys
+            &[oracle_1_pubkey, oracle_2_pubkey, oracle_3_pubkey],
+            // Threshold
+            2 
+        )
+    >
 }.compile();
 
 ```
