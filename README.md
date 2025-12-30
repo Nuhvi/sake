@@ -10,10 +10,7 @@ let emulation_witness = vec![
     { message }
 
     // OP_CAT input
-    { b"hello ".to_vec() }
-
-    // Enable the emulation clause
-    OP_1 
+    <"hello ">
 ];
 
 
