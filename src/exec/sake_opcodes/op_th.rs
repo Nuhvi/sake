@@ -35,7 +35,6 @@ impl<'a> Exec<'a> {
         );
 
         self.stack.pushstr(template_hash.as_byte_array());
-        dbg!(&self.stack, template_hash);
 
         Ok(())
     }
@@ -179,6 +178,132 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[derive(Deserialize, Debug, Clone)]
+    pub struct ScriptAssetsTestVector {
+        #[serde(rename = "tx")]
+        pub spending_tx: String,
+        #[serde(rename = "prevouts")]
+        pub spent_outputs: Vec<String>,
+        #[serde(rename = "index")]
+        pub input_index: usize,
+        // #[serde(deserialize_with = "deserialize_flags")]
+        // pub flags: HashSet<ScriptFlag>,
+        pub comment: String,
+        // #[serde(rename = "final")]
+        // pub is_final: bool,
+        pub success: WitnessData,
+        // pub failure: Option<WitnessData>,
+    }
+
+    #[derive(Deserialize, Debug, Clone)]
+    pub struct WitnessData {
+        pub witness: Vec<String>,
+    }
+
+    #[test]
+    fn test_op_templatehash_script_assets() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/exec/sake_opcodes/op_th/script_assets_test.json");
+        let file = std::fs::read(path).unwrap();
+
+        let vectors: Vec<ScriptAssetsTestVector> =
+            serde_json::from_slice(&file).expect("Failed to parse test vectors JSON");
+
+        for (i, tv) in vectors.iter().enumerate() {
+            println!("Running test {}: {}", i, tv.comment);
+
+            // Parse spending transaction
+            let tx_bytes = hex::decode(&tv.spending_tx).expect("Invalid spending_tx hex");
+            let tx: Transaction = deserialize(&tx_bytes).expect("Failed to parse spending_tx");
+
+            let mut prevouts = vec![];
+
+            // Parse spent_outputs (not strictly needed for hash, but good for validation)
+            for (j, out_hex) in tv.spent_outputs.iter().enumerate() {
+                let out_bytes = hex::decode(out_hex).expect("Invalid spent_outputs hex");
+                let txout: TxOut = deserialize(&out_bytes).unwrap_or_else(|_| {
+                    panic!("Failed to parse spent_outputs[{i}] in test {j}");
+                });
+                prevouts.push(txout);
+            }
+
+            // Extract witness for the input
+            assert!(tv.input_index < tx.input.len(), "input_index out of bounds");
+
+            let witness = tv
+                .success
+                .witness
+                .iter()
+                .map(|e| hex::decode(e).unwrap())
+                .collect::<Vec<_>>();
+
+            // Ignore annex vectors
+            if witness.len() >= 2 {
+                let last = witness.last().unwrap();
+                if !last.is_empty() && last[0] == 0x50 {
+                    continue;
+                }
+            };
+
+            // For some reason these test vectors don't have control block
+            let script_index = if prevouts[tv.input_index].script_pubkey.is_p2tr() {
+                witness.len().checked_sub(2).unwrap_or_default()
+            } else {
+                // segwit
+                witness.len().checked_sub(1).unwrap_or_default()
+            };
+
+            let script = ScriptBuf::from_bytes(if witness.is_empty() {
+                vec![]
+            } else {
+                witness[script_index].clone()
+            });
+            let witness_stack = witness[0..script_index].to_vec();
+
+            let mut sighashcache = SighashCache::new(tx);
+
+            let mut exec = Exec::new(
+                &mut sighashcache,
+                &prevouts,
+                tv.input_index,
+                // The basic script
+                &script,
+                witness_stack,
+            )
+            .unwrap();
+
+            loop {
+                match exec.exec_next() {
+                    Ok(_) => continue,
+                    Err(err) => {
+                        if tv.comment == "discouraged_template/emptystack" {
+                            // returns an empty stack
+                            assert_eq!(err, ExecError::NoMoreInstructions { success: false });
+                        } else if script.is_empty() && witness.is_empty() {
+                            assert_eq!(err, ExecError::NoMoreInstructions { success: false });
+                        } else {
+                            assert_eq!(err, ExecError::NoMoreInstructions { success: true });
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // TODO: test failure case
+            // let failure_witness = if let Some(failure) = tv.failure.clone() {
+            //     Some(
+            //         failure
+            //             .witness
+            //             .iter()
+            //             .map(|e| hex::decode(e).unwrap())
+            //             .collect::<Vec<_>>(),
+            //     )
+            // } else {
+            //     None
+            // };
         }
     }
 
