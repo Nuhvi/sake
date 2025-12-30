@@ -16,11 +16,9 @@ mod op_checksig;
 mod sake_opcodes {
     pub mod op_cat;
     pub mod op_csfsv;
-    pub mod op_ctv;
 }
 
 pub use sake_opcodes::op_csfsv;
-pub use sake_opcodes::op_ctv;
 
 /// Maximum number of bytes pushable to the stack
 const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
@@ -183,9 +181,6 @@ impl<'a> Exec<'a> {
             | OP_NOP10 => {
                 // nops
             }
-
-            // OP_CHECKTXHASHVERIFY for next transaction commitment and possibly fine grained introspection
-            op_ctv::OP_CODE => self.handle_op_ctv()?,
 
             // A NOP compatible version of OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
             op_csfsv::OP_CODE => self.handle_op_csfsv()?,

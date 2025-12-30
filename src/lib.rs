@@ -48,7 +48,6 @@ pub use script_encoding::TryIntoSakeScript;
 pub use witness_carrier::SakeWitnessCarrier;
 
 pub use exec::op_csfsv::{OP_CHECKSIGFROMSTACKVERIFY, OP_CSFSV};
-pub use exec::op_ctv::*;
 
 use crate::script_encoding::extract_encoded_scripts;
 

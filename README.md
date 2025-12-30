@@ -44,15 +44,9 @@ let locking_script = script!{
         script! {
             // Emulate Script Army Knife OpCodes:
 
-            // OP_CAT
+            // OP_CAT (bip-347)
             <"world"> OP_CAT
             "hello world"> OP_EQUALVERIFY
-
-            // OP_CTV: OP_CHECKTXHASHVERIFY (OP_NOP4)
-            { txhash.to_vec() }
-            OP_CHECKTXHASHVERIFY
-            OP_DROP
-            
 
             // OP_CSFSV: OP_CHECKSIGFROMSTACKVERIFY (OP_NOP5)
             { pk }
