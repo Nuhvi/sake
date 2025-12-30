@@ -47,7 +47,7 @@ pub use error::Error;
 pub use script_encoding::TryIntoSakeScript;
 pub use witness_carrier::SakeWitnessCarrier;
 
-pub use exec::op_csfsv::{OP_CHECKSIGFROMSTACKVERIFY, OP_CSFSV};
+pub use exec::op_csfs::{OP_CHECKSIGFROMSTACK, OP_CSFS};
 
 use crate::script_encoding::extract_encoded_scripts;
 
@@ -159,9 +159,13 @@ fn validate_inner<'a>(
         return Ok(());
     }
 
+    // Step 2: Extract witness stacks from the last output if it's OP_RETURN
+
+    // Remove the witness carrier from the transaction..
+    // signatures and introspections will be based on the transaction
+    // after removing the witness carrier.
     let last_output = tx.output.pop();
 
-    // Step 2: Extract witness stacks from the last output if it's OP_RETURN
     let witness_stacks = if let Some(last_output) = last_output {
         last_output
             .parse_witness_stacks()

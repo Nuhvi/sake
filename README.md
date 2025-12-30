@@ -48,11 +48,10 @@ let locking_script = script!{
             <"world"> OP_CAT
             "hello world"> OP_EQUALVERIFY
 
-            // OP_CSFSV: OP_CHECKSIGFROMSTACKVERIFY (OP_NOP5)
+            // OP_CHECKSIGFROMSTACK (bip-348)
             { pk }
-            OP_CHECKSIGFROMSTACKVERIFY
-            OP_2DROP
-            OP_DROP
+            OP_CHECKSIGFROMSTACK
+            OP_VERIFY
 
 
             { 1 }
@@ -76,6 +75,7 @@ let locking_script = script!{
 - `OP_CODESEPARATOR` is disabled (nop)
 - `OP_CTLV` and `OP_CSV` are nops 
 - `OP_SUCCESSX` causes the emulated script to fail instead of succeed
+- Introspection and signatures will be based on the transaction before adding the witness carrier.
 
 ## Acknowledgment
 

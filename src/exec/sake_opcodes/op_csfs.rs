@@ -1,29 +1,29 @@
-// A NOP compatible version of OP_CHECKSIGFROMSTACKVERIFY [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
+// A NOP compatible version of OP_CHECKSIGFROMSTACK [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
 
-use bitcoin::{Opcode, ScriptBuf, opcodes::all::OP_NOP5, secp256k1::Message};
+use bitcoin::{Opcode, ScriptBuf, opcodes::all::OP_RETURN_204, secp256k1::Message};
 
-pub(crate) const OP_CODE: Opcode = OP_NOP5;
+pub(crate) const OP_CODE: Opcode = OP_RETURN_204;
 
 #[allow(non_snake_case)]
-pub fn OP_CHECKSIGFROMSTACKVERIFY() -> ScriptBuf {
+pub fn OP_CHECKSIGFROMSTACK() -> ScriptBuf {
     ScriptBuf::from_bytes(vec![OP_CODE.to_u8()])
 }
 #[allow(non_snake_case)]
-pub fn OP_CSFSV() -> ScriptBuf {
-    OP_CHECKSIGFROMSTACKVERIFY()
+pub fn OP_CSFS() -> ScriptBuf {
+    OP_CHECKSIGFROMSTACK()
 }
 
 use crate::{Exec, exec::ExecError};
 
 impl<'a> Exec<'a> {
-    pub(crate) fn handle_op_csfsv(&mut self) -> Result<(), ExecError> {
+    pub(crate) fn handle_op_csfs(&mut self) -> Result<(), ExecError> {
         // BIP 348 requires 3 elements
         self.stack.needn(3)?;
 
         // Stack: <sig> <msg> <pubkey> (Top is pubkey)
-        let pk = self.stack.topstr(-1)?;
-        let msg_bytes = self.stack.topstr(-2)?;
-        let sig = self.stack.topstr(-3)?;
+        let pk = self.stack.popstr()?;
+        let msg_bytes = self.stack.popstr()?;
+        let sig = self.stack.popstr()?;
 
         if msg_bytes.len() != 32 {
             return Err(ExecError::SchnorrSig);
@@ -31,9 +31,10 @@ impl<'a> Exec<'a> {
 
         let msg = Message::from_digest_slice(&msg_bytes).map_err(|_| ExecError::SchnorrSig)?;
 
-        self.verify_signature(&sig, &pk, msg)?;
+        let bool = self.verify_signature(&sig, &pk, msg)?;
 
-        // CTV does not pop the stack (standard VERIFY behavior for NOP upgrades)
+        self.stack.pushnum(bool as i64);
+
         Ok(())
     }
 }
@@ -41,7 +42,7 @@ impl<'a> Exec<'a> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        Error, OP_CHECKSIGFROMSTACKVERIFY,
+        Error, OP_CHECKSIGFROMSTACK,
         exec::ExecError,
         tests::{mock_signed_message, validate_single_script},
     };
@@ -55,10 +56,7 @@ mod tests {
     #[test]
     fn test_op_csfs_unknown_key_type_succeeds() {
         let script = script! {
-            OP_CHECKSIGFROMSTACKVERIFY
-            OP_2DROP
-            OP_DROP
-            { 1 }
+            OP_CHECKSIGFROMSTACK
         };
         let witness = vec![
             vec![0x01; 64], // Non-empty Sig
@@ -72,10 +70,9 @@ mod tests {
     #[test]
     fn test_op_csfs_empty_sig_pushes_zero() {
         let script = script! {
-            OP_CHECKSIGFROMSTACKVERIFY
-            OP_2DROP
-            OP_DROP
-            { 1 }
+            OP_CHECKSIGFROMSTACK
+            OP_0
+            OP_EQUAL
         };
         let witness = vec![
             vec![],         // EMPTY SIG
@@ -89,7 +86,7 @@ mod tests {
     #[test]
     fn test_op_csfs_pk_size_zero_fails() {
         let script = script! {
-            OP_CHECKSIGFROMSTACKVERIFY
+            OP_CHECKSIGFROMSTACK
         };
         let witness = vec![
             vec![0x01; 64],
@@ -109,7 +106,7 @@ mod tests {
     #[test]
     fn test_op_csfs_invalid_sig_hard_fail() {
         let script = script! {
-            OP_CHECKSIGFROMSTACKVERIFY
+            OP_CHECKSIGFROMSTACK
         };
         let witness = vec![
             vec![0xff; 64], // Invalid but non-empty sig
@@ -133,10 +130,7 @@ mod tests {
 
         let script = script! {
             { pk }
-            OP_CHECKSIGFROMSTACKVERIFY
-            OP_2DROP
-            OP_DROP
-            { 1 }
+            OP_CHECKSIGFROMSTACK
         };
 
         let witness = vec![
