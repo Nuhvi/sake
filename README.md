@@ -4,25 +4,25 @@ Script Army Knife Emulator
 ## How does it work
 
 ```rust
-let emulation_witness = vec![
-    // OP_CHECKSIGFROMSTACK inputs
-    { signature }
-    { message }
+// Emulated SAKE Script
+let emulated_locking_script = script! {
+    // Emulate Script Army Knife OpCodes:
 
-    // OP_CAT input
-    <"hello ">
-];
+    // OP_CAT (bip-347)
+    <"world"> OP_CAT
+    "hello world"> OP_EQUALVERIFY
+
+    // OP_CHECKSIGFROMSTACK (bip-348)
+    { pk }
+    OP_CHECKSIGFROMSTACK
+    OP_VERIFY
 
 
-let taproot_witness = vec![
-    // Two of 3 oracles' signatures
-    { oracle_1_signature.to_vec() }
-    { oracle_2_signature.to_vec() }
+    { 1 }
+}
 
-    // .. script and control block..
-];
-
-let locking_script = script!{
+// Native tapleaf script locking the utxo on-chain
+let tapleaf_script = script!{
     // CTLV and CSV are OP_NOPs in the emulator.
     // So they have to happen before the OP_IF
     100 OP_CSV OP_DROP
@@ -38,30 +38,36 @@ let locking_script = script!{
     // <threshold> OP_GREATERTHANOREQUAL
     < 
         // Emulated script
-        script! {
-            // Emulate Script Army Knife OpCodes:
-
-            // OP_CAT (bip-347)
-            <"world"> OP_CAT
-            "hello world"> OP_EQUALVERIFY
-
-            // OP_CHECKSIGFROMSTACK (bip-348)
-            { pk }
-            OP_CHECKSIGFROMSTACK
-            OP_VERIFY
-
-
-            { 1 }
-        }
-        .try_into_sake_script(
+        emulated_script.try_into_sake_script(
             // Pubkeys
             &[oracle_1_pubkey, oracle_2_pubkey, oracle_3_pubkey],
             // Threshold
             2 
         )
     >
-}.compile();
+};
 
+// Emulated witness stack, passed in the witness carrier
+// (the last transaction output in the form of an OP_RETURN).
+let emulation_witness = vec![
+    // OP_CHECKSIGFROMSTACK inputs
+    { signature }
+    { message }
+
+    // OP_CAT input
+    <"hello ">
+];
+
+// The native taproot `Witness` passed to the network
+// after collecting signatures from the oracles, after
+// they validate they emulation witness.
+let taproot_witness = vec![
+    // Two of 3 oracles' signatures
+    { oracle_1_signature.to_vec() }
+    { oracle_2_signature.to_vec() }
+
+    // .. script and control block..
+];
 ```
 
 ## Limitations of the emulated script
