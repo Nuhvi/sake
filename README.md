@@ -4,8 +4,13 @@ Script Army Knife Emulator
 ## How does it work
 
 ```rust
+use sake::EncodeSakeScript;
+
+use bitcoin_script::{define_pushable, script};
+define_pushable!();
+
 // Emulated SAKE Script
-let emulated_locking_script = script! {
+let emulated_locking_script: ScriptBuf = script! {
     // Emulate Script Army Knife OpCodes:
 
     // OP_CAT (bip-347)
@@ -17,14 +22,13 @@ let emulated_locking_script = script! {
     OP_CHECKSIGFROMSTACK
     OP_VERIFY
 
-
     { 1 }
 }
 
 // Native tapleaf script locking the utxo on-chain
 let tapleaf_script = script!{
-    // CTLV and CSV are OP_NOPs in the emulator.
-    // So they have to happen before the OP_IF
+    // CTLV and CSV are OP_NOPs in the emulator,
+    // So they have to happen before the emulated script.
     100 OP_CSV OP_DROP
 
     // SAKE script encoded in the form of:
@@ -37,12 +41,9 @@ let tapleaf_script = script!{
     // OP_PUSHBYTES_32 <Oracle 3 Pubkey> OP_CHECKSIGADD
     // <threshold> OP_GREATERTHANOREQUAL
     < 
-        // Emulated script
-        emulated_script.try_into_sake_script(
-            // Pubkeys
+        emulated_script.encode_sake_script(
             &[oracle_1_pubkey, oracle_2_pubkey, oracle_3_pubkey],
-            // Threshold
-            2 
+            2 // Threshold (2/3)
         )
     >
 };

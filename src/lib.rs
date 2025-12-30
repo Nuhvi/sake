@@ -44,7 +44,7 @@ mod witness_carrier;
 use exec::Exec;
 
 pub use error::Error;
-pub use script_encoding::TryIntoSakeScript;
+pub use script_encoding::EncodeSakeScript;
 pub use witness_carrier::SakeWitnessCarrier;
 
 pub use exec::op_csfs::{OP_CHECKSIGFROMSTACK, OP_CSFS};
@@ -247,7 +247,7 @@ mod tests {
 
     define_pushable!();
 
-    use crate::{Error, SakeWitnessCarrier, TryIntoSakeScript, validate, validate_and_sign};
+    use crate::{EncodeSakeScript, Error, SakeWitnessCarrier, validate, validate_and_sign};
 
     pub fn dummy_tx() -> (Transaction, Vec<TxOut>) {
         let dummy_tx = Transaction {
@@ -378,7 +378,7 @@ mod tests {
 
         let script = script! {
             {
-                emulated_script.try_into_sake_script(
+                emulated_script.encode_sake_script(
                     &[
                         XOnlyPublicKey::from_str("18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166").unwrap()
                     ],

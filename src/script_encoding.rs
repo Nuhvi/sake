@@ -10,18 +10,18 @@ pub(crate) const PREFIX: &[u8; 4] = b"SAKE";
 pub(crate) const MAX_SUPPORTED_VERSION_VERSION: u8 = 0;
 pub(crate) const VERSION_LEN: usize = 1;
 
-pub trait TryIntoSakeScript {
+pub trait EncodeSakeScript {
     /// - oracles: List of the emulation oracles' public keys in deterministic order.
     /// - threshold: Minimum number of oracles required to sign on the emulation success.
-    fn try_into_sake_script(
+    fn encode_sake_script(
         self,
         oracles: &[XOnlyPublicKey],
         threshold: usize,
     ) -> Result<ScriptBuf, ScriptEncodingError>;
 }
 
-impl TryIntoSakeScript for ScriptBuf {
-    fn try_into_sake_script(
+impl EncodeSakeScript for ScriptBuf {
+    fn encode_sake_script(
         self: ScriptBuf,
         oracles: &[XOnlyPublicKey],
         threshold: usize,
@@ -163,7 +163,7 @@ mod tests {
 
             // OP_PUSHBYTES_<len> b"SAKE"<MAX_SUPPORTED_VERSION_VERSION=0><Encoded Script> OP_DROP
             // OP_PUSHBYTES_32 <Oracle 1 Pubkey> OP_CHECKSIG
-            <sake_script.clone().try_into_sake_script(&[pk], 1).unwrap()>
+            <sake_script.clone().encode_sake_script(&[pk], 1).unwrap()>
         };
 
         let decoded = extract_encoded_script(&script).unwrap().unwrap();
