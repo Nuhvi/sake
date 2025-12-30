@@ -146,12 +146,9 @@ mod tests {
     fn test_single_oracle() {
         let sake_script = script! {
             // Test OP_CAT
-            { b"world".to_vec() }
-            OP_CAT
-            { b"hello world".to_vec() }
-            OP_EQUALVERIFY
-
-            { 1 }
+            <"world"> OP_CAT
+            <"hello world"> OP_EQUALVERIFY
+            1
         };
 
         let secp = Secp256k1::new();
@@ -162,11 +159,11 @@ mod tests {
         let script = script! {
             // CTLV and CSV are OP_NOPs in the emulator.
             // So they have to happen before the OP_IF
-            { 100 }
-            OP_CSV
-            OP_DROP
+            100 OP_CSV OP_DROP
 
-            { sake_script.clone().try_into_sake_script(&[pk], 1).unwrap() }
+            // OP_PUSHBYTES_<len> b"SAKE"<MAX_SUPPORTED_VERSION_VERSION=0><Encoded Script> OP_DROP
+            // OP_PUSHBYTES_32 <Oracle 1 Pubkey> OP_CHECKSIG
+            <sake_script.clone().try_into_sake_script(&[pk], 1).unwrap()>
         };
 
         let decoded = extract_encoded_script(&script).unwrap().unwrap();
