@@ -40,66 +40,41 @@
 
 ### Transaction Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 1: Lock UTXO                                                   │
-├─────────────────────────────────────────────────────────────────────┤
-│  User creates Taproot output with:                                  │
-│  • Encoded SAKE script (emulated logic)                             │
-│  • Oracle public keys (e.g., 2-of-3)                                │
-│  • Optional: Alternative tapleafs for fallback/recovery             │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 2: Create Spending Transaction                                 │
-├─────────────────────────────────────────────────────────────────────┤
-│  User constructs transaction:                                       │
-│  • Inputs: Spend the locked UTXO                                    │
-│  • Outputs: Desired outputs                                         │
-│  • Last Output: Witness Carrier (OP_RETURN with emulation witness)  │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 3: Send to Oracles                                             │
-├─────────────────────────────────────────────────────────────────────┤
-│  User send the transaction, prevouts and scripts to each oracle     │
-│  • Oracles receive the transaction (with empty Witnesses)           │
-│  • No coordination between oracles needed                           │
-│  • Each oracle validates independently
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 4: Oracle Validation (Independent & Parallel)                  │
-├─────────────────────────────────────────────────────────────────────┤
-│  Each oracle:                                                       │
-│  1. Extracts witness carrier from last output.                      │
-│  2. Extracts encoded SAKE script from each spending input           │
-│  3. Removes witness carrier from transaction                        │
-│  4. Runs emulation engine with witness stacks                       │
-│  5. If valid → signs transaction | If invalid → rejects             │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 5: Collect Signatures                                          │
-├─────────────────────────────────────────────────────────────────────┤
-│  User collects threshold signatures from oracles                    │
-│  • Constructs Taproot witness for each input with emulated script   │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 6: Broadcast to Bitcoin Network                                │
-├─────────────────────────────────────────────────────────────────────┤
-│  Bitcoin nodes validate:                                            │
-│  • Native Taproot script (oracle signatures + threshold)            │
-│  • Standard Bitcoin consensus rules                                 │
-│  • ✓ Transaction confirmed                                          │
-└─────────────────────────────────────────────────────────────────────┘
-```
+#### Step 1: Lock UTXO
+User creates Taproot output with:
+ - Encoded SAKE script (emulated logic)
+ - Oracle public keys (e.g., 2-of-3)
+ - Optional: Alternative tapleafs for fallback/recovery
+
+#### Step 2: Create Spending Transaction
+User constructs transaction:
+ - Inputs: Spend the locked UTXO
+ - Outputs: Desired outputs
+ - Last Output: Witness Carrier (OP_RETURN with emulation witness)
+
+#### Step 3: Send to Oracles
+User send the transaction, prevouts and scripts to each oracle
+ - Oracles receive the transaction (with empty Witnesses)
+ - No coordination between oracles needed
+ - Each oracle validates independently
+                          
+#### Step 4: Oracle Validation (Independent & Parallel)
+Each oracle:
+1. Extracts witness carrier from last output
+2. Extracts encoded SAKE script from each spending input
+3. Removes witness carrier from transaction
+4. Runs emulation engine with witness stacks
+5. If valid → signs transaction | If invalid → rejects
+
+#### Step 5: Collect Signatures
+User collects threshold signatures from oracles
+ - Constructs Taproot witness for each input with emulated script
+
+#### Step 6: Broadcast to Bitcoin Network
+Bitcoin nodes validate:
+ - Native Taproot script (oracle signatures + threshold)
+ - Standard Bitcoin consensus rules
+ - ✓ Transaction confirmed
 
 **Important**: Oracles are stateless and don't need to communicate with each other, query the blockchain, or perform any setup ceremony. They can operate in TEEs (Trusted Execution Environments) for additional security.
 
