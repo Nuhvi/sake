@@ -51,7 +51,7 @@ pub struct Exec<'a> {
 
     validation_weight: i64,
 
-    secp: secp256k1::Secp256k1<secp256k1::All>,
+    secp: secp256k1::Secp256k1<secp256k1::VerifyOnly>,
 }
 
 impl<'a> Exec<'a> {
@@ -93,7 +93,7 @@ impl<'a> Exec<'a> {
             altstack: Stack::new(),
             validation_weight: start_validation_weight,
 
-            secp: secp256k1::Secp256k1::new(),
+            secp: secp256k1::Secp256k1::verification_only(),
         })
     }
 
