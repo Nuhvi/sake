@@ -129,7 +129,7 @@ mod tests {
         let (pk, msg, sig) = mock_signed_message(&secp);
 
         let script = script! {
-            { pk }
+            <pk>
             OP_CHECKSIGFROMSTACK
         };
 

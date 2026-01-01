@@ -442,6 +442,12 @@ A: The evidence of misbehavior is cryptographically provable and exists on-chain
 **Q: How much does SAKE cost to use?**  
 A: You pay standard Bitcoin transaction fees plus the cost of one additional `OP_RETURN` output (witness carrier). Oracle fees depend on the oracle service you choose.
 
+**Q: Should I use SAKE or wait for soft forks?**  
+A: One of the main purposes of SAKE is to provide the on-chain evidence of the demand and safety of such upgrades, so I encourage you to hack against SAKE and share your projects, as a signal to the community.
+
+**Q: Can SAKE scripts be converted to native scripts after a soft fork?**  
+A: Yes! If Script Army Knife opcodes are activated, you can create a direct translation by extracting the emulated script and using it as a native script, removing the oracle requirement, however you will need the Oracles' cooperation or a fallback tapleaf to move the funds to the new native covenant.
+
 ### Technical Questions
 
 **Q: Why is the witness carrier always the last output?**  
@@ -475,11 +481,12 @@ A: all federated bridges have four main limitations compared to SAKE:
 4. They are preset, and you can't choose to combine some of each federation into one trusted set of oracles.
 In comparison, a SAKE oracle can run in a stateless mode in a TEE doing nothing but signing a transaction they receive through an HTTP request, knowing nothing about Bitcoin, or any other system.
 
-**Q: Should I use SAKE or wait for soft forks?**  
-A: One of the main purposes of SAKE is to provide the on-chain evidence of the demand and safety of such upgrades, so I encourage you to hack against SAKE and share your projects, as a signal to the community.
+**Q How does SAKE compare to confidential-script?**
+SAKE is somewhat the opposite of [confidential-script](https://github.com/joshdoman/confidential-script-lib), as in it favors observability than confidentiality. By having the script and its witness observable on-chain, malicious oracles can be held accountable, and the community can examine the use-cases and security of Script Army Knife proposal and reason about a soft fork enabling it in the future. That being said, SAKE also encourages the use of TEE as a part of defence in depth strategy.
 
-**Q: Can SAKE scripts be converted to native scripts after a soft fork?**  
-A: Yes! If Script Army Knife opcodes are activated, you can create a direct translation by extracting the emulated script and using it as a native script, removing the oracle requirement, however you will need the Oracles' cooperation or a fallback tapleaf to move the funds to the new native covenant.
+**Q How does SAKE compare to confidential-script?**
+
+Similar to the previously discussed confidential-script, [Blind-vault](https://github.com/halseth/blind-vault) aims for privacy instead of observability, further more the blind signer is verifying general purpose program (compile to RiscV) as opposed to Bitcoin Script.
 
 ### Security Questions
 
