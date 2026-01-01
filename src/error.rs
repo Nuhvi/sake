@@ -1,6 +1,6 @@
 use bitcoin::{blockdata::script, sighash::TaprootError};
 
-use crate::{exec::Stack, script_encoding, witness_carrier::WitnessCarrierError};
+use crate::{OpAmountError, exec::Stack, script_encoding, witness_carrier::WitnessCarrierError};
 
 /// Error of a script execution.
 ///
@@ -38,6 +38,8 @@ pub enum ExecError {
     Debug,
 
     NoMoreInstructions { success: bool },
+
+    OpAmountError(OpAmountError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

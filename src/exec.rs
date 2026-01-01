@@ -14,11 +14,13 @@ pub use crate::stack::{ConditionStack, Stack};
 
 mod op_checksig;
 mod sake_opcodes {
+    pub mod op_amount;
     pub mod op_cat;
     pub mod op_csfs;
     pub mod op_th;
 }
 
+pub use sake_opcodes::op_amount;
 pub use sake_opcodes::op_csfs;
 pub use sake_opcodes::op_th;
 
@@ -173,8 +175,10 @@ impl<'a> Exec<'a> {
             OP_CAT => self.handle_op_cat()?,
             // bip-348
             op_csfs::OP_CODE => self.handle_op_csfs()?,
-            // bip-(?) [bip-templatehash](https://github.com/bitcoin/bips/blob/267932a0cc7f810c961f17a3f5a70938a0fd35dd/bip-templatehash.md)
+            // bip-(?) [bip-op_templatehash](https://github.com/bitcoin/bips/blob/267932a0cc7f810c961f17a3f5a70938a0fd35dd/bip-templatehash.md)
             op_th::OP_CODE => self.handle_op_th()?,
+            // bip-(?) [bip-op_amount](TBD)
+            op_amount::OP_CODE => self.handle_op_amount()?,
 
             //
             // Push value

@@ -47,6 +47,10 @@ pub use error::Error;
 pub use script_encoding::EncodeSakeScript;
 pub use witness_carrier::SakeWitnessCarrier;
 
+pub use exec::op_amount::{
+    OP_AMOUNT, OP_AMOUNT_CURRENT_INPUT_SELECTOR, OpAmountError, op_amount_input_selector,
+    op_amount_output_selector,
+};
 pub use exec::op_csfs::{OP_CHECKSIGFROMSTACK, OP_CSFS};
 pub use exec::op_th::{OP_TEMPLATEHASH, OP_TH};
 
@@ -345,7 +349,7 @@ mod tests {
                     0, 0, 0, 0, 0, 0, 0, 0, 0,
                 ]
                 .into(),
-                value: Amount::from_sat(361),
+                value: Amount::from_sat(362),
             },
             TxOut {
                 script_pubkey: vec![
@@ -354,7 +358,7 @@ mod tests {
                     0, 0, 0, 0, 0, 0, 0, 0, 0,
                 ]
                 .into(),
-                value: Amount::from_sat(362),
+                value: Amount::from_sat(363),
             },
         ];
 
