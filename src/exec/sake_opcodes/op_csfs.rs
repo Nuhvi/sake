@@ -17,9 +17,6 @@ pub fn OP_CSFS() -> ScriptBuf {
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_csfs(&mut self) -> Result<(), ExecError> {
-        // BIP 348 requires 3 elements
-        self.stack.needn(3)?;
-
         // Stack: <sig> <msg> <pubkey> (Top is pubkey)
         let pk = self.stack.popstr()?;
         let msg_bytes = self.stack.popstr()?;
