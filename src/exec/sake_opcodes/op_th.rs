@@ -1,4 +1,4 @@
-//! OP_TEMPLATEHASH [BIP ?](https://github.com/bitcoin/bips/pull/1974/files#bip-templatehash.md)
+//! OP_TEMPLATEHASH [BIP-pr#1974](https://github.com/bitcoin/bips/pull/1974/files#bip-templatehash.md)
 
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::consensus::Encodable;

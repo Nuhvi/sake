@@ -89,7 +89,7 @@ Script Army Knife (SAK) is a framework proposed by Salvatore Ingala that provide
 
 Script Army Knife consists of five carefully chosen opcodes that work together to enable flexible covenant construction:
 
-#### 1. **OP_CAT** (Vector Commitments)
+#### 1. **OP_CAT** (Vector Commitments) [BIP 347](https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki)
 *Concatenates two stack elements*
 
 - Generalizes ‘hashlocks’ to collections
@@ -97,7 +97,7 @@ Script Army Knife consists of five carefully chosen opcodes that work together t
 - Taptrees do it for Scripts
 - Mostly useful in combination with other primitives.
 
-#### 2. **OP_CHECKSIGFROMSTACK** (Signature Verification)
+#### 2. **OP_CHECKSIGFROMSTACK** (Signature Verification) [BIP 348](https://github.com/bitcoin/bips/blob/master/bip-0348.md)
 *Verifies a signature on arbitrary stack data*
 
 - Delegation
@@ -106,12 +106,12 @@ Script Army Knife consists of five carefully chosen opcodes that work together t
 
 **Example use:** Verify an oracle's signature on a price feed or timestamp without requiring the oracle to sign the entire transaction.
 
-#### 3. **OP_TEMPLATEHASH** (Next-Transaction Commitment)
+#### 3. **OP_TEMPLATEHASH** (Next-Transaction Commitment) [BIP-pr#1974](https://github.com/bitcoin/bips/pull/1974/files#bip-templatehash.md)
 *Pushes a hash of specific transaction fields to the stack*
 
 - Useful to represent outcomes or terminal states
 
-#### 4. **OP_CHECKCONTRACTVERIFY** (State-carrying UTXOs)
+#### 4. **OP_CHECKCONTRACTVERIFY** (State-carrying UTXOs) [BIP 443](https://github.com/bitcoin/bips/blob/master/bip-0443.mediawiki)
 *Verifies that transaction satisfies a contract specified on the stack*
 
 - On-chain multi-party protocols
@@ -119,7 +119,7 @@ Script Army Knife consists of five carefully chosen opcodes that work together t
 - Settlement protocols for L2s/bridges
 
 #### 5. **OP_AMOUNT** (Amount introspection)
-*Pushes the amount of the current input or output to the stack*
+*Pushes the amount of the current input, or a specific input or specific output to the stack*
 
 Mostly useful in combination with other primitives
 - Inputs: velocity limits
@@ -217,6 +217,7 @@ Here's a complete example showing a covenant that requires:
 
 ```rust
 use sake::{EncodeSakeScript, SakeWitnessCarrier};
+use sake::{OP_AMOUNT_CURRENT_INPUT_SELECTOR, op_amount_input_selector, op_amount_output_selector};
 use bitcoin_script::{define_pushable, script};
 
 define_pushable!();
@@ -235,6 +236,24 @@ let emulated_script: ScriptBuf = script! {
     // Enforce transaction template
     OP_TEMPLATEHASH
     <template_hash>
+    OP_EQUALVERIFY
+
+    // Check current input amount
+    <OP_AMOUNT_CURRENT_INPUT_SELECTOR> // Zero
+    OP_AMOUNT
+    <expected_current_input_amount>
+    OP_EQUALVERIFY
+
+    // Check first input amount
+    <op_amount_input_selector(0)> // -1
+    OP_AMOUNT
+    <expected_first_input_amount>
+    OP_EQUALVERIFY
+
+    // Check first output amount
+    <op_amount_output_selector(0)> // 1
+    OP_AMOUNT
+    <expected_first_output_amount>
     OP_EQUALVERIFY
     
     { 1 }  // Success
