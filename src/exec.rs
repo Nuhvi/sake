@@ -177,7 +177,7 @@ impl<'a> Exec<'a> {
             op_csfs::OP_CODE => self.handle_op_csfs()?,
             // bip-(?) [bip-op_templatehash](https://github.com/bitcoin/bips/blob/267932a0cc7f810c961f17a3f5a70938a0fd35dd/bip-templatehash.md)
             op_th::OP_CODE => self.handle_op_th()?,
-            // bip-(?) [bip-op_amount](TBD)
+            // bip-(?) [BIP-op_amount](https://github.com/bitcoin/bips/pull/2069/files#bip-op-amount.md)
             op_amount::OP_CODE => self.handle_op_amount()?,
 
             //

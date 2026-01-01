@@ -118,7 +118,7 @@ Script Army Knife consists of five carefully chosen opcodes that work together t
 - Multi-step transactions; reactive security
 - Settlement protocols for L2s/bridges
 
-#### 5. **OP_AMOUNT** (Amount introspection)
+#### 5. **OP_AMOUNT** (Amount introspection) [BIP-pr#2069](https://github.com/bitcoin/bips/pull/2069/files#bip-op-amount.md)
 *Pushes the amount of the current input, or a specific input or specific output to the stack*
 
 Mostly useful in combination with other primitives

@@ -1,4 +1,4 @@
-//! OP_AMOUNT [BIP ??](TBD)
+//! OP_AMOUNT [BIP-pr#2069](https://github.com/bitcoin/bips/pull/2069/files#bip-op-amount.md)
 
 use bitcoin::{Opcode, ScriptBuf, opcodes::all::OP_RETURN_228};
 
