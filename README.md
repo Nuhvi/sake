@@ -501,11 +501,11 @@ A: all federated bridges have four main limitations compared to SAKE:
 In comparison, a SAKE oracle can run in a stateless mode in a TEE doing nothing but signing a transaction they receive through an HTTP request, knowing nothing about Bitcoin, or any other system.
 
 **Q How does SAKE compare to confidential-script?**
-SAKE is somewhat the opposite of [confidential-script](https://github.com/joshdoman/confidential-script-lib), as in it favors observability than confidentiality. By having the script and its witness observable on-chain, malicious oracles can be held accountable, and the community can examine the use-cases and security of Script Army Knife proposal and reason about a soft fork enabling it in the future. That being said, SAKE also encourages the use of TEE as a part of defence in depth strategy.
+[Confidential-script](https://github.com/joshdoman/confidential-script-lib) emulates bitcoin script as is (using libbitcoinkernel) without any extra capabilities or opcodes, instead it is focused on enabling privacy whereas SAKE is aiming for observability. However, SAKE encourages the use of TEE as a part of defence in depth strategy.
 
 **Q How does SAKE compare to confidential-script?**
 
-Similar to the previously discussed confidential-script, [Blind-vault](https://github.com/halseth/blind-vault) aims for privacy instead of observability, further more the blind signer is verifying general purpose program (compile to RiscV) as opposed to Bitcoin Script.
+Similar to the previously discussed confidential-script, [Blind-vault](https://github.com/halseth/blind-vault) aims for privacy instead of observability, and while it enables emulating any computation on Bitcoin, it does so using Risc0 VM, instead of a minimal extension to tapscript.
 
 ### Security Questions
 
