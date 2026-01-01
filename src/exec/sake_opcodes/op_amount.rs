@@ -6,32 +6,32 @@ use crate::{Exec, exec::ExecError};
 
 pub(crate) const OP_CODE: Opcode = OP_RETURN_228;
 
-pub const OP_AMOUNT_CURRENT_INPUT_SELECTOR: i32 = 0;
-pub fn op_amount_input_selector(input_index: usize) -> i32 {
-    -input_index.cast_signed() as i32 - 1
-}
-pub fn op_amount_output_selector(output_index: usize) -> i32 {
-    output_index as i32 + 1
-}
-
 #[allow(non_snake_case)]
 pub fn OP_AMOUNT() -> ScriptBuf {
     ScriptBuf::from_bytes(vec![OP_CODE.to_u8()])
 }
 
+pub const OP_AMOUNT_CURRENT_INPUT_SELECTOR: i64 = 0;
+pub fn op_amount_input_selector(input_index: usize) -> i64 {
+    -input_index.cast_signed() as i64 - 1
+}
+pub fn op_amount_output_selector(output_index: usize) -> i64 {
+    output_index as i64 + 1
+}
+
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_amount(&mut self) -> Result<(), ExecError> {
-        let inout_index = self.stack.popnum()?;
+        let selector = self.stack.popnum()?;
 
-        let amount = match inout_index {
-            0 => self
+        let amount = match selector {
+            OP_AMOUNT_CURRENT_INPUT_SELECTOR => self
                 .prevouts
                 .get(self.input_idx)
                 .map(|txout| txout.value)
                 .expect("number of inputs and prevouts checked earlier"),
             i64::MIN..=-1_i64 => self
                 .prevouts
-                .get(inout_index.unsigned_abs() as usize - 1)
+                .get(selector.unsigned_abs() as usize - 1)
                 .map(|txout| txout.value)
                 .ok_or(ExecError::OpAmountError(
                     OpAmountError::OutOfBoundInputIndex,
@@ -40,7 +40,7 @@ impl<'a> Exec<'a> {
                 .sighashcache
                 .transaction()
                 .output
-                .get(inout_index as usize - 1)
+                .get(selector as usize - 1)
                 .map(|out| out.value)
                 .ok_or(ExecError::OpAmountError(
                     OpAmountError::OutOfBoundOutputIndex,
