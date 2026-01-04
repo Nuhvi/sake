@@ -1,6 +1,6 @@
 # SAKE - Script Army Knife Emulator
 
-**SAKE** enables Bitcoin developers to write and deploy scripts using proposed opcodes (like `OP_CAT`, `OP_CHECKSIGFROMSTACK`, `OP_TEMPLATEHASH`, `OP_CONTRACTVERIFY`, `OP_AMOUNT`) that haven't been activated yet—without waiting for a soft fork. It achieves this by trusting blind oracles, selected by the user/developer with no setup or ceremony.
+**SAKE** enables Bitcoin developers to write and deploy scripts using proposed opcodes (like `OP_CAT`, `OP_CHECKSIGFROMSTACK`, `OP_TEMPLATEHASH`, `OP_CHECKCONTRACTVERIFY`, `OP_AMOUNT`) that haven't been activated yet—without waiting for a soft fork. It achieves this by trusting blind oracles, selected by the user/developer with no setup or ceremony.
 
 ## Table of Contents
 
