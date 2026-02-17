@@ -9,11 +9,6 @@ use bitcoin::{Opcode, ScriptBuf};
 
 use crate::exec::{Exec, ExecError};
 
-const TEMPLATEHASH_TAG: &[u8; 32] = &[
-    3, 143, 106, 237, 22, 145, 102, 179, 91, 137, 70, 69, 51, 154, 120, 68, 137, 218, 168, 84, 99,
-    88, 97, 111, 217, 2, 44, 34, 237, 220, 171, 121,
-];
-
 pub const OP_CODE: Opcode = OP_RETURN_206;
 
 #[allow(non_snake_case)]
@@ -24,6 +19,11 @@ pub fn OP_TEMPLATEHASH() -> ScriptBuf {
 pub fn OP_TH() -> ScriptBuf {
     OP_TEMPLATEHASH()
 }
+
+const TEMPLATEHASH_TAG: &[u8; 32] = &[
+    3, 143, 106, 237, 22, 145, 102, 179, 91, 137, 70, 69, 51, 154, 120, 68, 137, 218, 168, 84, 99,
+    88, 97, 111, 217, 2, 44, 34, 237, 220, 171, 121,
+];
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_th(&mut self) -> Result<(), ExecError> {
@@ -254,10 +254,10 @@ mod tests {
 
                 // For some reason these test vectors don't have control block
                 let script_index = if prevouts[tv.input_index].script_pubkey.is_p2tr() {
-                    witness.len().checked_sub(2).unwrap_or_default()
+                    witness.len().saturating_sub(2)
                 } else {
                     // segwit
-                    witness.len().checked_sub(1).unwrap_or_default()
+                    witness.len().saturating_sub(1)
                 };
 
                 let script = ScriptBuf::from_bytes(if witness.is_empty() {
@@ -313,10 +313,10 @@ mod tests {
 
                 // For some reason these test vectors don't have control block
                 let script_index = if prevouts[tv.input_index].script_pubkey.is_p2tr() {
-                    witness.len().checked_sub(2).unwrap_or_default()
+                    witness.len().saturating_sub(2)
                 } else {
                     // segwit
-                    witness.len().checked_sub(1).unwrap_or_default()
+                    witness.len().saturating_sub(1)
                 };
 
                 let script = ScriptBuf::from_bytes(if witness.is_empty() {
