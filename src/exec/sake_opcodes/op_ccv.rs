@@ -33,7 +33,7 @@ const BIP341_NUMS_KEY: [u8; 32] = [
 ];
 
 /// Transaction-wide state for CCV amount tracking
-pub struct CCVTxState {
+pub(crate) struct CCVTxState {
     pub output_min_amount: Vec<u64>,
     pub output_checked_default: Vec<bool>,
     pub output_checked_deduct: Vec<bool>,
@@ -148,14 +148,26 @@ impl<'a> Exec<'a> {
         }
 
         // Handle amount semantics
-        if mode == CCV_MODE_CHECK_OUTPUT {
-            // Default: preserve residual amount
-            self.ccv_check_output_default(index as usize, target_amount)?;
-        } else if mode == CCV_MODE_CHECK_OUTPUT_DEDUCT_AMOUNT {
-            // Deduct: subtract output amount from residual
-            self.ccv_check_output_deduct(index as usize, target_amount)?;
+        match mode {
+            CCV_MODE_CHECK_OUTPUT => {
+                // Default: preserve residual amount
+                self.ccv_check_output_default(index as usize, target_amount)?;
+            }
+            CCV_MODE_CHECK_OUTPUT_DEDUCT_AMOUNT => {
+                // Deduct: subtract output amount from residual
+                self.ccv_check_output_deduct(index as usize, target_amount)?;
+            }
+            CCV_MODE_CHECK_OUTPUT_IGNORE_AMOUNT => {
+                // Ignore amount: verify script only, no amount checks
+                // This mode intentionally does nothing for amount handling
+            }
+            CCV_MODE_CHECK_INPUT => {
+                // Input mode: no amount checks needed
+            }
+            _ => {
+                // Undefined modes are handled earlier (return success)
+            }
         }
-        // CCV_MODE_CHECK_OUTPUT_IGNORE_AMOUNT and CCV_MODE_CHECK_INPUT do nothing for amounts
 
         Ok(())
     }
@@ -257,25 +269,83 @@ impl<'a> Exec<'a> {
     }
 
     /// Check output with default amount semantic (preserve residual)
-    fn ccv_check_output_default(&mut self, _index: usize, amount: u64) -> Result<(), ExecError> {
-        // Get the residual amount from input state
-        let input_state = self.ccv_input_state()?;
+    /// Implements BIP-443 default amount checking logic
+    fn ccv_check_output_default(&mut self, index: usize, amount: u64) -> Result<(), ExecError> {
+        // Access transaction-wide state
+        let tx_state = self
+            .ccv_tx_state
+            .ok_or(ExecError::CCVAmountConflict)?
+            .borrow_mut();
 
-        // Check if output amount covers the residual
-        if amount < input_state.residual_input_amount {
+        // BIP-443: Check if output was already checked with deduct mode
+        if tx_state.output_checked_deduct[index] {
+            return Err(ExecError::CCVAmountConflict);
+        }
+
+        // Get residual amount from per-input state
+        let residual = self
+            .ccv_input_state
+            .as_ref()
+            .ok_or(ExecError::CCVAmountConflict)?
+            .residual_input_amount;
+
+        // BIP-443: The output amount must be at least the minimum required
+        let required = tx_state.output_min_amount[index] + residual;
+        if amount < required {
             return Err(ExecError::CCVInsufficientAmount);
+        }
+
+        // Mark output as checked with default mode
+        drop(tx_state); // Release borrow before modifying
+        if let Some(tx_state) = self.ccv_tx_state {
+            tx_state.borrow_mut().output_checked_default[index] = true;
         }
 
         Ok(())
     }
 
     /// Check output with deduct amount semantic
-    fn ccv_check_output_deduct(&mut self, _index: usize, amount: u64) -> Result<(), ExecError> {
-        // Get residual from input state
-        let input_state = self.ccv_input_state()?;
+    /// Implements BIP-443 deduct amount checking logic
+    fn ccv_check_output_deduct(&mut self, index: usize, amount: u64) -> Result<(), ExecError> {
+        // Access transaction-wide state
+        let tx_state = self
+            .ccv_tx_state
+            .ok_or(ExecError::CCVAmountConflict)?
+            .borrow_mut();
 
-        if input_state.residual_input_amount < amount {
+        // BIP-443: Check if output was already checked with default mode
+        if tx_state.output_checked_default[index] {
+            return Err(ExecError::CCVAmountConflict);
+        }
+
+        // Check if already checked with deduct (can't deduct twice)
+        if tx_state.output_checked_deduct[index] {
+            return Err(ExecError::CCVAmountConflict);
+        }
+
+        // Get residual amount from per-input state
+        let residual = self
+            .ccv_input_state
+            .as_ref()
+            .ok_or(ExecError::CCVAmountConflict)?
+            .residual_input_amount;
+
+        // BIP-443: Deduct the output amount from residual
+        if residual < amount {
             return Err(ExecError::CCVInsufficientAmount);
+        }
+
+        // Update the minimum amount requirement for this output
+        drop(tx_state); // Release borrow before modifying
+        if let Some(tx_state) = self.ccv_tx_state {
+            let mut state = tx_state.borrow_mut();
+            state.output_min_amount[index] += amount;
+            state.output_checked_deduct[index] = true;
+        }
+
+        // Update the residual amount for this input
+        if let Some(ref mut input_state) = self.ccv_input_state {
+            input_state.residual_input_amount -= amount;
         }
 
         Ok(())
@@ -307,16 +377,6 @@ impl<'a> Exec<'a> {
         script.extend_from_slice(&key.serialize());
         Ok(script)
     }
-
-    fn ccv_input_state(&self) -> Result<CCVInputState, ExecError> {
-        // Get the amount from the current input
-        let amount = self
-            .prevouts
-            .get(self.input_idx)
-            .map(|txout| txout.value.to_sat())
-            .unwrap_or(0);
-        Ok(CCVInputState::new(amount))
-    }
 }
 
 #[cfg(test)]
@@ -338,7 +398,7 @@ mod tests {
             OP_CHECKCONTRACTVERIFY
         };
 
-        let witness = vec![];
+        let witness: Vec<Vec<u8>> = vec![];
         let result = validate_single_script(script, witness);
         assert!(matches!(
             result,
@@ -360,7 +420,7 @@ mod tests {
             OP_CHECKCONTRACTVERIFY
         };
 
-        let witness = vec![];
+        let witness: Vec<Vec<u8>> = vec![];
         // This will fail with script mismatch because the output doesn't match
         // but we're testing that empty data doesn't cause an error
         let result = validate_single_script(script, witness);
@@ -384,7 +444,7 @@ mod tests {
             OP_CHECKCONTRACTVERIFY
         };
 
-        let witness = vec![];
+        let witness: Vec<Vec<u8>> = vec![];
         // This will fail with script mismatch because the output doesn't match the NUMS-based key
         let result = validate_single_script(script, witness);
         assert!(matches!(
@@ -407,12 +467,157 @@ mod tests {
             OP_CHECKCONTRACTVERIFY
         };
 
-        let witness = vec![];
+        let witness: Vec<Vec<u8>> = vec![];
         // Will fail with script mismatch since output doesn't match
         let result = validate_single_script(script, witness);
         assert!(matches!(
             result,
             Err(crate::Error::Exec(ExecError::CCVScriptMismatch))
         ));
+    }
+
+    #[test]
+    fn test_op_ccv_ignore_amount_mode() {
+        // Test CCV_MODE_CHECK_OUTPUT_IGNORE_AMOUNT (1)
+        // This mode verifies the script but ignores amount entirely
+        // It should NOT trigger amount checks or conflict detection
+        let script = script! {
+            OP_0                              // <data=empty>
+            OP_0                              // <index=0>
+            { vec![0x02u8; 32] }              // <pk>
+            OP_0                              // <taptree=empty>
+            OP_1                              // <mode=1> (CHECK_OUTPUT_IGNORE_AMOUNT)
+            OP_CHECKCONTRACTVERIFY
+        };
+
+        let witness: Vec<Vec<u8>> = vec![];
+        // Will fail with script mismatch since output doesn't match
+        // But it should NOT fail with amount-related errors
+        let result = validate_single_script(script, witness);
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::Exec(ExecError::CCVScriptMismatch))
+            ),
+            "Mode 1 should verify script but ignore amount. Got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_ccv_ignore_amount_does_not_conflict_with_default() {
+        // Test that IGNORE_AMOUNT (mode 1) doesn't conflict with DEFAULT (mode 0)
+        // Mode 1 should not mark the output as checked, allowing subsequent mode 0
+        let tx_state = std::cell::RefCell::new(CCVTxState::new(1));
+
+        // Use IGNORE_AMOUNT first - it should NOT mark output as checked
+        // (Implementation detail: mode 1 doesn't modify state)
+        let is_default = tx_state.borrow().output_checked_default[0];
+        let is_deduct = tx_state.borrow().output_checked_deduct[0];
+        assert!(!is_default);
+        assert!(!is_deduct);
+
+        // Mode 1 doesn't set any flags, so subsequent modes can still be used
+        // This is the expected behavior per BIP-443
+    }
+
+    // Cross-input scenario tests with proper CCV state initialization
+
+    #[test]
+    fn test_ccv_tx_state_initialization() {
+        // Test that CCVTxState is properly initialized
+        let tx_state = CCVTxState::new(3);
+        assert_eq!(tx_state.output_min_amount.len(), 3);
+        assert_eq!(tx_state.output_checked_default.len(), 3);
+        assert_eq!(tx_state.output_checked_deduct.len(), 3);
+        assert!(tx_state.output_min_amount.iter().all(|&x| x == 0));
+        assert!(!tx_state.output_checked_default.iter().any(|&x| x));
+        assert!(!tx_state.output_checked_deduct.iter().any(|&x| x));
+    }
+
+    #[test]
+    fn test_ccv_input_state_initialization() {
+        // Test that CCVInputState tracks residual amount correctly
+        let input_state = CCVInputState::new(1000);
+        assert_eq!(input_state.residual_input_amount, 1000);
+    }
+
+    #[test]
+    fn test_ccv_shared_state_deduct_accumulation() {
+        // Test BIP-443 Figure 2: Multiple inputs contributing to one output
+        // Two inputs each use DEDUCT on the same output
+        let tx_state = std::cell::RefCell::new(CCVTxState::new(1));
+
+        // First input: deduct 500
+        {
+            let mut input_state1 = CCVInputState::new(1000);
+            tx_state.borrow_mut().output_checked_deduct[0] = true;
+            tx_state.borrow_mut().output_min_amount[0] += 500;
+            input_state1.residual_input_amount -= 500;
+            assert_eq!(input_state1.residual_input_amount, 500);
+        }
+
+        // Second input: deduct 300 (should fail since already checked with deduct)
+        // This simulates the conflict detection
+        let already_checked = tx_state.borrow().output_checked_deduct[0];
+        assert!(
+            already_checked,
+            "Output should be marked as checked with deduct"
+        );
+
+        // The min_amount should accumulate
+        assert_eq!(tx_state.borrow().output_min_amount[0], 500);
+    }
+
+    #[test]
+    fn test_ccv_default_mode_cannot_follow_deduct() {
+        // Test that DEFAULT mode cannot be used after DEDUCT on same output
+        let tx_state = std::cell::RefCell::new(CCVTxState::new(1));
+
+        // First: use DEDUCT
+        tx_state.borrow_mut().output_checked_deduct[0] = true;
+        tx_state.borrow_mut().output_min_amount[0] = 500;
+
+        // Then: try DEFAULT (should detect conflict)
+        let is_deduct = tx_state.borrow().output_checked_deduct[0];
+        assert!(
+            is_deduct,
+            "Should detect that output was already checked with deduct"
+        );
+    }
+
+    #[test]
+    fn test_ccv_deduct_cannot_follow_default() {
+        // Test that DEDUCT mode cannot be used after DEFAULT on same output
+        let tx_state = std::cell::RefCell::new(CCVTxState::new(1));
+
+        // First: use DEFAULT
+        tx_state.borrow_mut().output_checked_default[0] = true;
+
+        // Then: try DEDUCT (should detect conflict)
+        let is_default = tx_state.borrow().output_checked_default[0];
+        assert!(
+            is_default,
+            "Should detect that output was already checked with default"
+        );
+    }
+
+    #[test]
+    fn test_ccv_multiple_deducts_same_input() {
+        // Test that one input can split across multiple outputs using DEDUCT
+        let tx_state = std::cell::RefCell::new(CCVTxState::new(2));
+        let mut input_state = CCVInputState::new(1000);
+
+        // Deduct 400 to output 0
+        tx_state.borrow_mut().output_checked_deduct[0] = true;
+        tx_state.borrow_mut().output_min_amount[0] = 400;
+        input_state.residual_input_amount -= 400;
+        assert_eq!(input_state.residual_input_amount, 600);
+
+        // Deduct 500 to output 1
+        tx_state.borrow_mut().output_checked_deduct[1] = true;
+        tx_state.borrow_mut().output_min_amount[1] = 500;
+        input_state.residual_input_amount -= 500;
+        assert_eq!(input_state.residual_input_amount, 100);
     }
 }

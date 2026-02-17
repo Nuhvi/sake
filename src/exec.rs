@@ -56,6 +56,11 @@ pub struct Exec<'a> {
     validation_weight: i64,
 
     secp: secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+
+    /// CCV per-input state (residual amount tracking)
+    pub(crate) ccv_input_state: Option<op_ccv::CCVInputState>,
+    /// Reference to CCV transaction-wide state (shared across all inputs)
+    pub(crate) ccv_tx_state: Option<&'a std::cell::RefCell<op_ccv::CCVTxState>>,
 }
 
 impl<'a> Exec<'a> {
@@ -98,7 +103,36 @@ impl<'a> Exec<'a> {
             validation_weight: start_validation_weight,
 
             secp: secp256k1::Secp256k1::verification_only(),
+
+            ccv_input_state: None,
+            ccv_tx_state: None,
         })
+    }
+
+    /// Create a new Exec instance with CCV transaction state.
+    /// This initializes the per-input state and sets up the shared transaction state.
+    pub(crate) fn new_with_ccv(
+        sighashcache: &'a mut SighashCache<Transaction>,
+        prevouts: &'a [TxOut],
+        input_idx: usize,
+        script: &'a Script,
+        script_witness: Vec<Vec<u8>>,
+        ccv_tx_state: &'a std::cell::RefCell<op_ccv::CCVTxState>,
+    ) -> Result<Exec<'a>, Error> {
+        // Start with the basic initialization
+        let mut exec = Self::new(sighashcache, prevouts, input_idx, script, script_witness)?;
+
+        // Initialize per-input CCV state (BIP-443 section "Input initialization")
+        let input_amount = prevouts
+            .get(input_idx)
+            .map(|txout| txout.value.to_sat())
+            .unwrap_or(0);
+        exec.ccv_input_state = Some(op_ccv::CCVInputState::new(input_amount));
+
+        // Store reference to shared transaction state
+        exec.ccv_tx_state = Some(ccv_tx_state);
+
+        Ok(exec)
     }
 
     ///////////////

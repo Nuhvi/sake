@@ -195,6 +195,10 @@ fn validate_inner<'a>(
     // or script pubkeys that wouldn't match after adding the witness carrier
     let mut sighashcache = SighashCache::new(tx.clone());
 
+    // Initialize CCV transaction-wide state (BIP-443)
+    let ccv_tx_state =
+        std::cell::RefCell::new(crate::exec::op_ccv::CCVTxState::new(tx.output.len()));
+
     // Step 4: Execute each input script with its witness
     for ((input_idx, script), (witness_index, witness_stack)) in inputs.iter().zip(witness_stacks) {
         if *input_idx != witness_index {
@@ -204,12 +208,13 @@ fn validate_inner<'a>(
             });
         }
 
-        let mut exec = Exec::new(
+        let mut exec = Exec::new_with_ccv(
             &mut sighashcache,
             prevouts,
             *input_idx,
             script,
             witness_stack,
+            &ccv_tx_state,
         )?;
 
         loop {
