@@ -16,11 +16,13 @@ mod op_checksig;
 mod sake_opcodes {
     pub mod op_amount;
     pub mod op_cat;
+    pub mod op_ccv;
     pub mod op_csfs;
     pub mod op_th;
 }
 
 pub use sake_opcodes::op_amount;
+pub use sake_opcodes::op_ccv;
 pub use sake_opcodes::op_csfs;
 pub use sake_opcodes::op_th;
 
@@ -175,6 +177,8 @@ impl<'a> Exec<'a> {
             OP_CAT => self.handle_op_cat()?,
             // bip-348
             op_csfs::OP_CODE => self.handle_op_csfs()?,
+            // bip-443
+            op_ccv::OP_CODE => self.handle_op_ccv()?,
             // bip-(?) [bip-op_templatehash](https://github.com/bitcoin/bips/blob/267932a0cc7f810c961f17a3f5a70938a0fd35dd/bip-templatehash.md)
             op_th::OP_CODE => self.handle_op_th()?,
             // bip-(?) [BIP-op_amount](https://github.com/bitcoin/bips/pull/2069/files#bip-op-amount.md)
