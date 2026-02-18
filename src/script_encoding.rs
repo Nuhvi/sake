@@ -170,4 +170,31 @@ mod tests {
 
         assert_eq!(decoded, sake_script)
     }
+
+    #[test]
+    fn test_large_script_encoding() {
+        // Test encoding a moderately large script (100KB)
+        // This should succeed as it's well below the PushBytes limit (~4GB)
+        let large_script_bytes = vec![0x51u8; 100_000]; // 100KB of OP_PUSHNUM_1
+        let large_script = ScriptBuf::from_bytes(large_script_bytes);
+
+        let secp = Secp256k1::new();
+        let mut rng = secp256k1::rand::thread_rng();
+        let keypair = secp256k1::Keypair::new(&secp, &mut rng);
+        let pk = keypair.x_only_public_key().0;
+
+        let result = large_script.encode_sake_script(&[pk], 1);
+        assert!(
+            result.is_ok(),
+            "Large script (100KB) should encode successfully"
+        );
+
+        let encoded_script = result.unwrap();
+        let decoded = extract_encoded_script(&encoded_script).unwrap().unwrap();
+        assert_eq!(
+            decoded.as_bytes().len(),
+            100_000,
+            "Decoded script should match original size"
+        );
+    }
 }
