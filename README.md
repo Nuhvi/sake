@@ -582,6 +582,9 @@ A: Oracles see your transaction before signing, and they can see the control blo
 Use multiple independent oracles and threshold signatures to reduce this risk. 
 Consider using **TEE**-based oracles, and or oracles that have slash-able bonds on other networks.
 
+**Q: Why does the witness carrier use OP_RETURN instead of the Taproot annex?**
+A: The annex would be preferable place for this data, but annex-bearing transactions are non-standard and won't relay across the p2p network today, and might carry a prohibitive meaning in a future soft fork. OP_RETURN outputs have no risk of acquiring new meaning, relay without issue, and recently the OP_RETURN size limit in most relay nodes have became significantly more liberal.
+
 ## Acknowledgments
 
 This implementation is heavily based on [Steven Roose's BitVM/rust-bitcoin-scriptexec](https://github.com/BitVM/rust-bitcoin-scriptexec).
