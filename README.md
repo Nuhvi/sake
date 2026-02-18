@@ -92,7 +92,7 @@ Script Army Knife consists of five carefully chosen opcodes that work together t
 #### 1. **OP_CAT** (Vector Commitments) [BIP 347](https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki)
 *Concatenates two stack elements*
 
-- Generalizes ‘hashlocks’ to collections
+- Generalizes 'hashlocks' to collections
 - Allows to create Merkle trees
 - Taptrees do it for Scripts
 - Mostly useful in combination with other primitives.
@@ -398,6 +398,71 @@ let vault_scripts = vec![
     }
 ];
 ```
+
+### Example: Stateful Contract (Append-Only Log)
+
+`OP_CHECKCONTRACTVERIFY` enables UTXOs that carry state: the UTXO's taproot key encodes both the contract logic (taptree) and the current state (data tweak). Each spend must produce an output whose key reflects the updated state, cryptographically enforcing valid transitions.
+
+The pattern works as follows. A UTXO is created whose taproot output key is `tweak(naked_key, current_state)`. To spend it, the script verifies the input's key matches the claimed old state, computes the new state in script, and verifies the output's key matches `tweak(naked_key, new_state)`. Anyone attempting to spend with a false old state will fail the input check; anyone producing an output with a tampered new state will fail the output check.
+
+```
+         Input UTXO                        Output UTXO
+   ┌──────────────────────┐          ┌──────────────────────┐
+   │ key = tweak(K, s0)   │  spend   │ key = tweak(K, s1)   │
+   │                      │ ──────►  │                      │
+   │ s0 = "old_state_     │          │ s1 = "old_state_     │
+   │       nonce_1234"    │          │       nonce_1234_    │
+   │                      │          │       5678"          │
+   └──────────────────────┘          └──────────────────────┘
+          verified by                        enforced by
+        CCV CHECK_INPUT                   CCV CHECK_OUTPUT
+```
+
+The script uses `OP_CAT` to construct the new state from witness-supplied data and `OP_CHECKCONTRACTVERIFY` in both CHECK_INPUT and CHECK_OUTPUT modes to enforce the transition:
+
+```rust
+// State: a byte string that grows by appending each round.
+// The UTXO key = taptweak(data_tweak(NUMS_KEY, current_state), taptree).
+// Witness provides: [append_data, old_state]
+
+let contract_script = script! {
+    // old_state is on top of stack (from witness).
+    // Duplicate it: one copy for the input check, one for OP_CAT.
+    OP_DUP
+
+    // Verify the INPUT encodes old_state in its key.
+    // CCV computes: tweak(NUMS_KEY, old_state) + taptweak(taptree)
+    // and checks it matches prevout[current_input].scriptPubKey.
+    <-1>            // index = current input
+    <NUMS_KEY>      // naked key
+    <taptree>       // same taptree carried forward
+    <-1>            // mode = CHECK_INPUT
+    OP_CHECKCONTRACTVERIFY
+
+    // Stack: [append_data, old_state]
+    // Compute new_state = old_state || append_data
+    OP_SWAP
+    OP_CAT          // Stack: [new_state]
+
+    // Verify the OUTPUT encodes new_state in its key.
+    // CCV computes: tweak(NUMS_KEY, new_state) + taptweak(taptree)
+    // and checks it matches tx.output[0].scriptPubKey,
+    // and that output[0].value >= input residual (amount preserved).
+    OP_0            // index = output 0
+    <NUMS_KEY>      // same naked key
+    <taptree>       // same taptree — contract logic is unchanged
+    OP_0            // mode = CHECK_OUTPUT (default amount: preserve residual)
+    OP_CHECKCONTRACTVERIFY
+
+    OP_1
+};
+```
+
+Each spend appends append_data (supplied in the witness) to the running state. The taptree is preserved unchanged across transitions, meaning the contract logic itself is immutable — only the data tweak evolves and accumulates.
+
+The append-only example above is intentionally simple — new_state = old_state || append_data — to keep the pattern clear. In practice, a production append-only log would store a Merkle root as the new state: each spend updates the root by inserting the new entry and committing the updated root as the data tweak. This keeps the read and write operations as efficient as the logarithm of the number of updates. 
+
+The same pattern generalises to any deterministic state machine — a counter, a balance sheet, a game board — where the state is hashed or committed before being encoded in the key.
 
 ## Limitations
 

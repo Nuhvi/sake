@@ -40,6 +40,14 @@ pub enum ExecError {
     NoMoreInstructions { success: bool },
 
     OpAmountError(OpAmountError),
+
+    // OP_CHECKCONTRACTVERIFY (BIP-443) errors
+    InvalidCCVIndex,
+    InvalidCCVTaptree,
+    InvalidCCVPubkey,
+    CCVScriptMismatch,
+    CCVAmountConflict,
+    CCVInsufficientAmount,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

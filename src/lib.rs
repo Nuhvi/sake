@@ -51,6 +51,7 @@ pub use exec::op_amount::{
     OP_AMOUNT, OP_AMOUNT_CURRENT_INPUT_SELECTOR, OpAmountError, op_amount_input_selector,
     op_amount_output_selector,
 };
+pub use exec::op_ccv::{OP_CCV, OP_CHECKCONTRACTVERIFY};
 pub use exec::op_csfs::{OP_CHECKSIGFROMSTACK, OP_CSFS};
 pub use exec::op_th::{OP_TEMPLATEHASH, OP_TH};
 
@@ -194,6 +195,10 @@ fn validate_inner<'a>(
     // or script pubkeys that wouldn't match after adding the witness carrier
     let mut sighashcache = SighashCache::new(tx.clone());
 
+    // Initialize CCV transaction-wide state (BIP-443)
+    let ccv_tx_state =
+        std::cell::RefCell::new(crate::exec::op_ccv::CCVTxState::new(tx.output.len()));
+
     // Step 4: Execute each input script with its witness
     for ((input_idx, script), (witness_index, witness_stack)) in inputs.iter().zip(witness_stacks) {
         if *input_idx != witness_index {
@@ -203,12 +208,13 @@ fn validate_inner<'a>(
             });
         }
 
-        let mut exec = Exec::new(
+        let mut exec = Exec::new_with_ccv(
             &mut sighashcache,
             prevouts,
             *input_idx,
             script,
             witness_stack,
+            &ccv_tx_state,
         )?;
 
         loop {
