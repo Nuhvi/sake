@@ -480,4 +480,156 @@ mod tests {
                 .expect("Signature verification failed");
         }
     }
+
+    #[test]
+    fn test_validate_large_script() {
+        // Create a large SAKE script programmatically (100KB)
+        // by repeating OP_16 OP_DROP pairs many times, then ending with 1
+        // This tests that the validation pipeline handles large encoded scripts correctly
+        let mut script_bytes = Vec::new();
+
+        // Each iteration adds: OP_16 (1 byte) + OP_DROP (1 byte) = 2 bytes
+        // We want ~100KB, so ~50,000 iterations
+        for _ in 0..50000 {
+            script_bytes.push(0x60u8); // OP_16 pushes 16 to the stack
+            script_bytes.push(0x75u8); // OP_DROP removes the top stack item
+        }
+        script_bytes.push(0x51u8); // OP_1 pushes 1 to the stack (final result)
+
+        let large_script = ScriptBuf::from_bytes(script_bytes);
+
+        // Verify the script is large enough (>50KB)
+        assert!(
+            large_script.as_bytes().len() > 50000,
+            "Script should be >50KB, got {} bytes",
+            large_script.as_bytes().len()
+        );
+
+        let secp = Secp256k1::new();
+        let secret_key = [0x42; 32];
+        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+        let public_key = keypair.x_only_public_key().0;
+
+        // Encode the large script
+        let encoded_script = large_script
+            .encode_sake_script(&[public_key], 1)
+            .expect("Should encode large script successfully");
+
+        // Create a transaction with witness carrier for the large script
+        // No witness data needed since the script is self-contained
+        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![witness_carrier],
+        };
+
+        let prevouts = vec![TxOut {
+            value: Amount::from_sat(1000),
+            script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
+        }];
+
+        // Validate the transaction with the large script
+        // This tests that the validation pipeline handles large encoded scripts correctly
+        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+        assert!(
+            result.is_ok(),
+            "Transaction with large script should validate successfully: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_validate_large_witness_carrier() {
+        // Test validation with large witness data in the carrier
+        // Create witness data larger than 520 bytes to test chunking
+        let large_witness_element = vec![0x42u8; 600]; // 600 bytes > 520 byte push limit
+        let large_witness_stack = vec![large_witness_element.clone()];
+
+        // Script that checks the witness data size
+        let script = script! {
+            // Witness stack: [large_element]
+            // Get size of top element, compare to 600, then drop the element
+            OP_SIZE
+            600 OP_EQUALVERIFY
+            OP_DROP
+            1
+        };
+
+        let secp = Secp256k1::new();
+        let secret_key = [0x42; 32];
+        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+        let public_key = keypair.x_only_public_key().0;
+
+        // Encode the script
+        let encoded_script = script
+            .encode_sake_script(&[public_key], 1)
+            .expect("Should encode script successfully");
+
+        // Create witness carrier with large witness data (>520 bytes)
+        let witness_carrier = TxOut::sake_witness_carrier(&[(0, large_witness_stack.clone())]);
+
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![witness_carrier],
+        };
+
+        let prevouts = vec![TxOut {
+            value: Amount::from_sat(1000),
+            script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
+        }];
+
+        // Validate the transaction with large witness carrier
+        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+        assert!(
+            result.is_ok(),
+            "Transaction with large witness carrier should validate successfully: {:?}",
+            result.err()
+        );
+
+        // Also test with multiple large witness elements
+        let multiple_large_elements = vec![vec![0xAAu8; 400], vec![0xBBu8; 400], vec![0xCCu8; 400]];
+
+        // Script for multiple elements
+        // Witness stack: [element1, element2, element3] (element3 on top)
+        let multi_script = script! {
+            // Check third element size (400) - on top
+            OP_SIZE
+            400 OP_EQUALVERIFY
+            OP_DROP
+            // Check second element size (400)
+            OP_SIZE
+            400 OP_EQUALVERIFY
+            OP_DROP
+            // Check first element size (400)
+            OP_SIZE
+            400 OP_EQUALVERIFY
+            OP_DROP
+            1
+        };
+
+        let encoded_multi_script = multi_script
+            .encode_sake_script(&[public_key], 1)
+            .expect("Should encode multi script successfully");
+
+        let multi_witness_carrier = TxOut::sake_witness_carrier(&[(0, multiple_large_elements)]);
+
+        let multi_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![multi_witness_carrier],
+        };
+
+        let result_multi = validate(&multi_tx, &prevouts, &[(0, encoded_multi_script)]);
+        assert!(
+            result_multi.is_ok(),
+            "Transaction with multiple large witness elements should validate successfully: {:?}",
+            result_multi.err()
+        );
+    }
 }
