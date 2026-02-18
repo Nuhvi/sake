@@ -447,11 +447,7 @@ mod tests {
     }
 
     // Helper to compute the expected taproot output key from parameters
-    fn compute_expected_internal_key(
-        naked_key: &XOnlyPublicKey,
-        data: &[u8],
-        taptree: Option<&[u8; 32]>,
-    ) -> XOnlyPublicKey {
+    fn compute_expected_internal_key(naked_key: &XOnlyPublicKey, data: &[u8]) -> XOnlyPublicKey {
         // Start with naked key
         let mut current_key = *naked_key;
 
@@ -479,35 +475,6 @@ mod tests {
             current_key = XOnlyPublicKey::from_slice(&tweaked_bytes[1..]).unwrap();
         }
 
-        // Apply taptweak if taptree is present
-        if let Some(taptree_hash) = taptree {
-            // BIP-341 taptweak: H_TapTweak(internal_key || merkle_root)
-            let mut engine = bitcoin::hashes::sha256::HashEngine::default();
-            let tag = b"TapTweak";
-            let tag_hash = sha256::Hash::hash(tag);
-            engine.input(&tag_hash[..]);
-            engine.input(&tag_hash[..]);
-            engine.input(&current_key.serialize());
-            engine.input(taptree_hash.as_slice());
-            let tweak_hash = bitcoin::hashes::sha256::Hash::from_engine(engine);
-
-            // Apply taptweak
-            let pk_bytes = current_key.serialize();
-            let mut compressed_pk = [0u8; 33];
-            compressed_pk[0] = 0x02;
-            compressed_pk[1..].copy_from_slice(&pk_bytes);
-            let full_pk = bitcoin::secp256k1::PublicKey::from_slice(&compressed_pk).unwrap();
-
-            let tweak_scalar =
-                bitcoin::secp256k1::SecretKey::from_slice(&tweak_hash.to_byte_array()).unwrap();
-            let secp = Secp256k1::signing_only();
-            let tweak_point = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &tweak_scalar);
-
-            let tweaked = full_pk.combine(&tweak_point).unwrap();
-            let tweaked_bytes = tweaked.serialize();
-            current_key = XOnlyPublicKey::from_slice(&tweaked_bytes[1..]).unwrap();
-        }
-
         current_key
     }
 
@@ -521,7 +488,7 @@ mod tests {
         let naked_key = keypair.x_only_public_key().0;
 
         // Compute expected output key (no data, no taptree)
-        let internal_key = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
         // Create a transaction with matching output
         let input_amount = 1000u64;
@@ -576,7 +543,7 @@ mod tests {
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
         let naked_key = keypair.x_only_public_key().0;
 
-        let internal_key = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
         let input_amount = 1000u64;
         let prevouts = [TxOut {
@@ -628,7 +595,7 @@ mod tests {
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
         let naked_key = keypair.x_only_public_key().0;
 
-        let internal_key = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
         let input_amount = 1000u64;
         let prevouts = [TxOut {
@@ -680,7 +647,7 @@ mod tests {
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
         let naked_key = keypair.x_only_public_key().0;
 
-        let internal_key = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
         let input_amount = 1000u64;
         let prevouts = [TxOut {
@@ -690,7 +657,7 @@ mod tests {
 
         // First output: 400 sats (will be deducted)
         // Second output: remaining 600 sats (verified with default mode)
-        let internal_key_2 = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key_2 = compute_expected_internal_key(&naked_key, &[]);
         let outputs = [
             create_p2tr_output(internal_key, None, 400),
             create_p2tr_output(internal_key_2, None, 600),
@@ -746,7 +713,7 @@ mod tests {
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
         let naked_key = keypair.x_only_public_key().0;
 
-        let internal_key = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
         let input_amount = 500u64;
         let prevouts = [TxOut {
@@ -796,7 +763,7 @@ mod tests {
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
         let naked_key = keypair.x_only_public_key().0;
 
-        let internal_key = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
         // Two inputs - checking input 1 from input 0
         let prevouts = [
@@ -846,7 +813,7 @@ mod tests {
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
         let naked_key = keypair.x_only_public_key().0;
 
-        let internal_key = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
         let prevouts = [create_p2tr_output(internal_key, None, 1000)];
 
@@ -890,7 +857,7 @@ mod tests {
         // BIP-0443: pk=empty buffer uses BIP-341 NUMS key
         let nums_key = XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).unwrap();
 
-        let internal_key = compute_expected_internal_key(&nums_key, &[], None);
+        let internal_key = compute_expected_internal_key(&nums_key, &[]);
 
         let prevouts = [create_p2tr_output(internal_key, None, 1000)];
 
@@ -932,7 +899,7 @@ mod tests {
         let naked_key = keypair.x_only_public_key().0;
 
         let data = b"test data commitment";
-        let internal_key = compute_expected_internal_key(&naked_key, data, None);
+        let internal_key = compute_expected_internal_key(&naked_key, data);
 
         let prevouts = [create_p2tr_output(internal_key, None, 1000)];
 
@@ -1162,7 +1129,7 @@ mod tests {
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
         let naked_key = keypair.x_only_public_key().0;
 
-        let internal_key = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
         let input_amount = 1000u64;
         let prevouts = [TxOut {
@@ -1224,7 +1191,7 @@ mod tests {
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
         let naked_key = keypair.x_only_public_key().0;
 
-        let internal_key = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
         let input_amount = 1000u64;
         let prevouts = [TxOut {
@@ -1283,7 +1250,7 @@ mod tests {
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
         let naked_key = keypair.x_only_public_key().0;
 
-        let internal_key = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
         let input_amount = 1000u64;
         let prevouts = [TxOut {
@@ -1347,7 +1314,7 @@ mod tests {
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
         let naked_key = keypair.x_only_public_key().0;
 
-        let internal_key = compute_expected_internal_key(&naked_key, &[], None);
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
         // Two inputs with 500 satoshis each
         let prevouts = [
@@ -1448,12 +1415,11 @@ mod tests {
         let naked_key = XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).unwrap();
 
         // A dummy (taptree) for the contract (actual taptree validation happens on chain)
-        let taptree: [u8; 32] = [0; 32];
+        let taptree = TapNodeHash::from_slice(&[0; 32]).unwrap();
 
         // Initial data commitment - this is the expected data in the input
         let old_data = b"old_state_nonce_1234";
-        let input_internal_key =
-            compute_expected_internal_key(&naked_key, old_data, Some(&taptree));
+        let input_internal_key = compute_expected_internal_key(&naked_key, old_data);
 
         // Data to append (passed in witness)
         let append_data = b"_5678";
@@ -1462,21 +1428,20 @@ mod tests {
         let mut new_data = old_data.to_vec();
         new_data.extend_from_slice(append_data);
 
-        let output_internal_key =
-            compute_expected_internal_key(&naked_key, &new_data, Some(&taptree));
+        let output_internal_key = compute_expected_internal_key(&naked_key, &new_data);
 
         // Input UTXO with old data
         let input_amount = 1000u64;
         let prevouts = [create_p2tr_output(
             input_internal_key,
-            None, // internal_key already has taptweak applied
+            Some(taptree),
             input_amount,
         )];
 
         // Output UTXO with computed new data
         let outputs = [create_p2tr_output(
             output_internal_key,
-            None, // internal_key already has taptweak applied
+            Some(taptree),
             input_amount,
         )];
 
@@ -1496,7 +1461,7 @@ mod tests {
             // Push CCV params for input verification (will be consumed by first CCV)
             <-1>                                // <index=-1>
             <naked_key.serialize().to_vec()>    // <pk=naked_key>
-            <taptree.to_vec()>                  // <taptree=merkle_root>
+            <taptree.to_byte_array().to_vec()>  // <taptree>
             <-1>                                // <mode=-1> (CHECK_INPUT)
             OP_CHECKCONTRACTVERIFY
 
@@ -1508,7 +1473,7 @@ mod tests {
             // Step 3: Create output with computed new_data
             OP_0                                // <index=0>
             <naked_key.serialize().to_vec()>    // <pk=same_naked_key>
-            <taptree.to_vec()>                  // <taptree=same_merkle_root>
+            <taptree.to_byte_array().to_vec()>  // <taptree=same taptree>
             OP_0                                // <mode=0> (CHECK_OUTPUT)
             OP_CHECKCONTRACTVERIFY
 
