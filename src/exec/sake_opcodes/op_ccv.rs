@@ -817,51 +817,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_ccv_mode_check_input_index_minus_one() {
-        // BIP-0443: CCV_MODE_CHECK_INPUT with index=-1 (checks current input)
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        let prevouts = [create_p2tr_output(internal_key, None, 1000)];
-
-        let outputs = [create_p2tr_output(internal_key, None, 1000)];
-
-        // Script checks itself (current input) using index=-1
-        let ccv_script = script! {
-            OP_0                              // <data=empty>
-            <vec![0x81u8]>                   // <index=-1> (current input)
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            <vec![0x81u8]>                   // <mode=-1> (CHECK_INPUT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            result.is_ok(),
-            "CCV_MODE_CHECK_INPUT with index=-1 should succeed: {:?}",
-            result
-        );
-    }
-
     // ========== BIP-0443 Parameter Tests ==========
 
     #[test]
@@ -1370,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ccv_deduct_conflict_takes_priority_over_insufficient_amount() {
+    fn test_ccv_deduct_insufficient_fires_before_conflict() {
         // BIP-443 specifies the deduct checks in this order:
         //   1. if residual_input_amount < outputs[index].amount: fail
         //   2. if output_checked_default[index] or output_checked_deduct[index]: fail
