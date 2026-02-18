@@ -270,36 +270,52 @@ impl<'a> Exec<'a> {
     }
 
     /// Check output with default amount semantic (preserve residual)
-    /// Implements BIP-443 default amount checking logic
+    ///
+    /// BIP-443 pseudocode:
+    ///   if output_checked_deduct[index]: fail
+    ///   output_min_amount[index] += residual_input_amount
+    ///   residual_input_amount = 0
+    ///   if outputs[index].amount < output_min_amount[index]: fail
+    ///   output_checked_default[index] = True
     fn ccv_check_output_default(&mut self, index: usize, amount: u64) -> Result<(), ExecError> {
-        // Access transaction-wide state
         let tx_state = self
             .ccv_tx_state
             .ok_or(ExecError::CCVAmountConflict)?
             .borrow_mut();
 
-        // BIP-443: Check if output was already checked with deduct mode
         if tx_state.output_checked_deduct[index] {
             return Err(ExecError::CCVAmountConflict);
         }
 
-        // Get residual amount from per-input state
         let residual = self
             .ccv_input_state
             .as_ref()
             .ok_or(ExecError::CCVAmountConflict)?
             .residual_input_amount;
 
-        // BIP-443: The output amount must be at least the minimum required
-        let required = tx_state.output_min_amount[index] + residual;
-        if amount < required {
+        // Accumulate residual into the shared minimum — this is what enables
+        // aggregation across multiple inputs targeting the same output.
+        let new_min = tx_state.output_min_amount[index]
+            .checked_add(residual)
+            .ok_or(ExecError::CCVInsufficientAmount)?;
+
+        if amount < new_min {
             return Err(ExecError::CCVInsufficientAmount);
         }
 
-        // Mark output as checked with default mode
-        drop(tx_state); // Release borrow before modifying
+        drop(tx_state);
         if let Some(tx_state) = self.ccv_tx_state {
-            tx_state.borrow_mut().output_checked_default[index] = true;
+            let mut state = tx_state.borrow_mut();
+            // Persist the accumulated minimum so subsequent DEFAULT checks from
+            // other inputs build on top of it rather than starting from zero.
+            state.output_min_amount[index] = new_min;
+            state.output_checked_default[index] = true;
+        }
+
+        // Zero the residual — the input's amount is now committed to this output
+        // and must not be counted again by a subsequent DEFAULT call.
+        if let Some(ref mut input_state) = self.ccv_input_state {
+            input_state.residual_input_amount = 0;
         }
 
         Ok(())
@@ -1308,7 +1324,18 @@ mod tests {
 
     #[test]
     fn test_ccv_multiple_inputs_aggregate_default() {
-        // BIP-0443 Figure 2: Multiple inputs can aggregate to same output using DEFAULT
+        // BIP-0443 Figure 2: Multiple inputs can aggregate to same output using DEFAULT.
+        //
+        // Per the spec, each DEFAULT call accumulates into shared output_min_amount:
+        //   output_min_amount[0] += residual_input_amount  (per input)
+        //
+        // Input 0: 500 sats → output_min_amount[0] becomes 500
+        // Input 1: 500 sats → output_min_amount[0] becomes 1000
+        // Output 0 must be >= 1000.
+        //
+        // The negative case (output=999) is the critical one: it would pass silently
+        // under a broken implementation that never persists output_min_amount, because
+        // each input would independently check `0 + 500 <= 999` and succeed.
         let secp = Secp256k1::new();
         let secret_key = [0x42; 32];
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
@@ -1316,7 +1343,6 @@ mod tests {
 
         let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
-        // Two inputs with 500 satoshis each
         let prevouts = [
             TxOut {
                 value: Amount::from_sat(500),
@@ -1328,51 +1354,51 @@ mod tests {
             },
         ];
 
-        // One output receiving aggregated amount (1000 sats)
-        let outputs = [create_p2tr_output(internal_key, None, 1000)];
-
-        // Script for input 0: DEFAULT on output 0
-        let ccv_script_0 = script! {
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0> (CHECK_OUTPUT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
+        let ccv_script_for = |input_idx: usize| {
+            let s = script! {
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0> (CHECK_OUTPUT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+            s.encode_sake_script(&[dummy_oracle_pk()], input_idx)
+                .unwrap()
         };
 
-        // Script for input 1: DEFAULT on output 0 (aggregation)
-        let ccv_script_1 = script! {
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0> (CHECK_OUTPUT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
+        let make_tx = |output_amount: u64| {
+            let output = create_p2tr_output(internal_key, None, output_amount);
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
+            Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default(), Default::default()],
+                output: vec![output, witness_carrier],
+            }
         };
 
-        let oracle_pk = dummy_oracle_pk();
-        let encoded_script_0 = ccv_script_0.encode_sake_script(&[oracle_pk], 0).unwrap();
-        let encoded_script_1 = ccv_script_1.encode_sake_script(&[oracle_pk], 1).unwrap();
+        let scripts = [(0, ccv_script_for(0)), (1, ccv_script_for(1))];
 
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default(), Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(
-            &tx,
-            &prevouts,
-            &[(0, encoded_script_0), (1, encoded_script_1)],
-        );
+        // Success: output holds exactly the aggregated 1000 sats
+        let result = validate(&make_tx(1000), &prevouts, &scripts);
         assert!(
             result.is_ok(),
-            "Multiple inputs should aggregate with DEFAULT mode: {:?}",
+            "Should succeed when output equals aggregated residuals (1000): {:?}",
+            result
+        );
+
+        // Failure: output is 1 sat short of the required 1000.
+        // A correct implementation accumulates output_min_amount across inputs, so
+        // the second input's check sees min=500 and requires 500+500=1000 > 999.
+        // A broken implementation that never persists output_min_amount would see
+        // min=0 for each input and pass (500 <= 999), so this case MUST fail to
+        // confirm accumulation is actually working.
+        let result = validate(&make_tx(999), &prevouts, &scripts);
+        assert!(
+            matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
+            "Should fail when output is 1 sat short of aggregated residuals (999): {:?}",
             result
         );
     }
