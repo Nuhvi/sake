@@ -490,999 +490,6 @@ mod tests {
         current_key
     }
 
-    #[test]
-    fn test_ccv_mode_check_output_success() {
-        // BIP-0443: CCV_MODE_CHECK_OUTPUT (mode=0)
-        // Verifies output script and checks that output amount >= residual input amount
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        // Compute expected output key (no data, no taptree)
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        // Create a transaction with matching output
-        let input_amount = 1000u64;
-        let prevouts = [TxOut {
-            value: Amount::from_sat(input_amount),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-        }];
-
-        // Create output with the expected key and sufficient amount
-        let outputs = [
-            create_p2tr_output(internal_key, None, input_amount), // Output 0 matches the expected key
-        ];
-        dbg!(&internal_key, &outputs[0].script_pubkey.as_bytes());
-
-        // Build the CCV script: verify output 0 has the expected key and amount
-        let ccv_script = script! {
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0> (output 0)
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0> (CHECK_OUTPUT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        // Encode the script and witness
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            result.is_ok(),
-            "CCV_MODE_CHECK_OUTPUT should succeed with matching output: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_mode_check_output_insufficient_amount() {
-        // BIP-0443: CCV_MODE_CHECK_OUTPUT with insufficient output amount should fail
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        let input_amount = 1000u64;
-        let prevouts = [TxOut {
-            value: Amount::from_sat(input_amount),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-        }];
-
-        // Output has less than input amount
-        let outputs = [
-            create_p2tr_output(internal_key, None, 500), // Only 500 sats, but input is 1000
-        ];
-
-        let ccv_script = script! {
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0>
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
-            "Should fail with insufficient amount: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_mode_check_output_ignore_amount() {
-        // BIP-0443: CCV_MODE_CHECK_OUTPUT_IGNORE_AMOUNT (mode=1)
-        // Verifies output script but ignores amount entirely
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        let input_amount = 1000u64;
-        let prevouts = [TxOut {
-            value: Amount::from_sat(input_amount),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-        }];
-
-        // Output has any amount (even 0 should work)
-        let outputs = [
-            create_p2tr_output(internal_key, None, 0), // 0 sats, but mode 1 ignores amount
-        ];
-
-        let ccv_script = script! {
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_1                              // <mode=1> (CHECK_OUTPUT_IGNORE_AMOUNT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            result.is_ok(),
-            "CCV_MODE_CHECK_OUTPUT_IGNORE_AMOUNT should succeed regardless of amount: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_mode_deduct_amount_success() {
-        // BIP-0443: CCV_MODE_CHECK_OUTPUT_DEDUCT_AMOUNT (mode=2)
-        // Deducts output amount from residual and allows splitting
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        let input_amount = 1000u64;
-        let prevouts = [TxOut {
-            value: Amount::from_sat(input_amount),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-        }];
-
-        // First output: 400 sats (will be deducted)
-        // Second output: remaining 600 sats (verified with default mode)
-        let internal_key_2 = compute_expected_internal_key(&naked_key, &[]);
-        let outputs = [
-            create_p2tr_output(internal_key, None, 400),
-            create_p2tr_output(internal_key_2, None, 600),
-        ];
-
-        // Script that first deducts from output 0, then sends rest to output 1
-        let ccv_script = script! {
-            // First: Deduct 400 from output 0
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
-            OP_CHECKCONTRACTVERIFY
-
-            // Then: Send remaining to output 1
-            OP_0                              // <data=empty>
-            OP_1                              // <index=1>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0> (CHECK_OUTPUT)
-            OP_CHECKCONTRACTVERIFY
-
-            // Script succeeds if both CCV calls pass
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            result.is_ok(),
-            "Deduct + Default mode should work for splitting: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_mode_deduct_insufficient_amount() {
-        // BIP-0443: CCV_MODE_CHECK_OUTPUT_DEDUCT_AMOUNT with insufficient input
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        let input_amount = 500u64;
-        let prevouts = [TxOut {
-            value: Amount::from_sat(input_amount),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-        }];
-
-        // Output wants 1000 but input only has 500
-        let outputs = [create_p2tr_output(internal_key, None, 1000)];
-
-        let ccv_script = script! {
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
-            "Should fail when deducting more than available: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_mode_check_input_success() {
-        // BIP-0443: CCV_MODE_CHECK_INPUT (mode=-1)
-        // Verifies another input's scriptPubKey (no amount check)
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        // Two inputs - checking input 1 from input 0
-        let prevouts = [
-            create_p2tr_output(internal_key, None, 1000),
-            create_p2tr_output(internal_key, None, 2000),
-        ];
-
-        // One output to receive funds
-        let outputs = [create_p2tr_output(internal_key, None, 3000)];
-
-        // Script that checks input 1 has the expected key
-        let ccv_script = script! {
-            OP_0                              // <data=empty>
-            OP_1                              // <index=1> (check input 1)
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            <vec![0x81u8]>                   // <mode=-1> (CHECK_INPUT) - 0x81 is minimal encoding of -1
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default(), Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            result.is_ok(),
-            "CCV_MODE_CHECK_INPUT should succeed: {:?}",
-            result
-        );
-    }
-
-    // ========== BIP-0443 Parameter Tests ==========
-
-    #[test]
-    fn test_ccv_stack_underflow() {
-        // Test that insufficient stack elements cause an error
-        use crate::tests::validate_single_script;
-        use bitcoin_script::{define_pushable, script};
-
-        define_pushable!();
-
-        let script = script! {
-            <vec![0x01u8; 32]>  // <data>
-            OP_0                // <index=0>
-            <vec![0x02u8; 32]>  // <pk>
-            // Missing <taptree> and <mode>
-            OP_CHECKCONTRACTVERIFY
-        };
-
-        let witness: Vec<Vec<u8>> = vec![];
-        let result = validate_single_script(script, witness);
-        assert!(matches!(
-            result,
-            Err(crate::Error::Exec(ExecError::InvalidStackOperation))
-        ));
-    }
-
-    #[test]
-    fn test_ccv_pk_nums_key() {
-        // BIP-0443: pk=empty buffer uses BIP-341 NUMS key
-        let nums_key = XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).unwrap();
-
-        let internal_key = compute_expected_internal_key(&nums_key, &[]);
-
-        let prevouts = [create_p2tr_output(internal_key, None, 1000)];
-
-        let outputs = [create_p2tr_output(internal_key, None, 1000)];
-
-        // Script uses empty pk (NUMS key)
-        let ccv_script = script! {
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            OP_0                              // <pk=empty> (NUMS key)
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0>
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(result.is_ok(), "Empty pk should use NUMS key: {:?}", result);
-    }
-
-    #[test]
-    fn test_ccv_data_tweak() {
-        // BIP-0443: Non-empty data applies data tweak
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let data = b"test data commitment";
-        let internal_key = compute_expected_internal_key(&naked_key, data);
-
-        let prevouts = [create_p2tr_output(internal_key, None, 1000)];
-
-        let outputs = [create_p2tr_output(internal_key, None, 1000)];
-
-        // Script with data commitment
-        let ccv_script = script! {
-            <data.to_vec()>                   // <data>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0>
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            result.is_ok(),
-            "Data tweak should be applied correctly: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_script_mismatch() {
-        // BIP-0443: Mismatched script should fail with CCVScriptMismatch
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        // Create output with wrong key (not matching the computed one)
-        let wrong_key = XOnlyPublicKey::from_str(
-            "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
-        )
-        .unwrap();
-
-        let prevouts = [create_p2tr_output(naked_key, None, 1000)];
-
-        let outputs = [create_p2tr_output(wrong_key, None, 1000)];
-
-        let ccv_script = script! {
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0>
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            matches!(result, Err(Error::Exec(ExecError::CCVScriptMismatch))),
-            "Should fail with script mismatch: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_undefined_mode_succeeds() {
-        // BIP-0443: Undefined modes succeed immediately (soft fork safety)
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let prevouts = [create_p2tr_output(naked_key, None, 1000)];
-
-        // Output doesn't matter since undefined mode should succeed
-        let outputs = [TxOut {
-            value: Amount::from_sat(0),
-            script_pubkey: ScriptBuf::new(), // Invalid script
-        }];
-
-        // Mode=3 is undefined
-        let ccv_script = script! {
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_3                              // <mode=3> (undefined)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            result.is_ok(),
-            "Undefined mode should succeed for soft fork safety: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_output_index_out_of_bounds() {
-        // BIP-0443: Output index out of bounds should fail
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let prevouts = [create_p2tr_output(naked_key, None, 1000)];
-
-        // Only one output (index 0)
-        let outputs = [create_p2tr_output(naked_key, None, 1000)];
-
-        // Try to check output index 5 (doesn't exist)
-        let ccv_script = script! {
-            OP_0                              // <data=empty>
-            OP_5                              // <index=5> (out of bounds)
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0>
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            matches!(result, Err(Error::Exec(ExecError::InvalidCCVIndex))),
-            "Should fail with invalid index: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_input_index_out_of_bounds() {
-        // BIP-0443: Input index out of bounds should fail
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        // Only one input
-        let prevouts = [create_p2tr_output(naked_key, None, 1000)];
-
-        let outputs = [create_p2tr_output(naked_key, None, 1000)];
-
-        // Try to check input index 3 (doesn't exist)
-        let ccv_script = script! {
-            OP_0                              // <data=empty>
-            OP_3                              // <index=3> (out of bounds)
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            <vec![0x81u8]>                   // <mode=-1> (CHECK_INPUT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            matches!(result, Err(Error::Exec(ExecError::InvalidCCVIndex))),
-            "Should fail with invalid index: {:?}",
-            result
-        );
-    }
-
-    // ========== BIP-0443 Amount Conflict Tests ==========
-
-    #[test]
-    fn test_ccv_conflict_deduct_then_default() {
-        // BIP-0443: Cannot use DEFAULT after DEDUCT on same output
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        let input_amount = 1000u64;
-        let prevouts = [TxOut {
-            value: Amount::from_sat(input_amount),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-        }];
-
-        let outputs = [
-            create_p2tr_output(internal_key, None, 600),
-            create_p2tr_output(internal_key, None, 400),
-        ];
-
-        // First DEDUCT on output 0, then try DEFAULT on same output 0
-        let ccv_script = script! {
-            // Deduct from output 0
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-
-            // Try to use DEFAULT on same output 0 (should conflict)
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0> (CHECK_OUTPUT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
-            "Should fail with amount conflict for DEDUCT then DEFAULT: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_conflict_default_then_deduct() {
-        // BIP-0443: Cannot use DEDUCT after DEFAULT on same output.
-        //
-        // The "DEFAULT then DEDUCT on the same output within a single input" scenario
-        // is unreachable under spec-compliant check order: DEFAULT zeroes the residual,
-        // so any subsequent DEDUCT (which reads the output's non-zero value) always hits
-        // the residual check first and returns CCVInsufficientAmount — the conflict flag
-        // is never reached.
-        //
-        // The reachable form of this conflict is cross-input: input 0 uses DEFAULT on
-        // output 0 (setting output_checked_default[0]=true), then input 1 tries DEDUCT
-        // on output 0. Input 1 has its own fresh residual (500 sats), and output 0 has
-        // value 1000, so residual(500) < amount(1000) → insufficient fires first.
-        //
-        // To make the conflict check reachable, output 0 must have a value <= input 1's
-        // residual. Set output 0 = 300, input 1 residual = 500: residual(500) >= amount(300)
-        // passes the residual check, then output_checked_default[0]=true fires as conflict.
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        // Input 0: 300 sats — uses DEFAULT on output 0 (sets output_checked_default[0])
-        // Input 1: 500 sats — tries DEDUCT on output 0 (residual 500 >= output 300, so
-        //                     residual check passes and conflict check fires)
-        let prevouts = [
-            TxOut {
-                value: Amount::from_sat(300),
-                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-            },
-            TxOut {
-                value: Amount::from_sat(500),
-                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-            },
-        ];
-
-        // Output 0: 300 sats — satisfies input 0's DEFAULT (300 >= 300) and has a value
-        // small enough that input 1's residual (500) passes the residual check.
-        let output = create_p2tr_output(internal_key, None, 300);
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
-
-        // Input 0 script: DEFAULT on output 0
-        let script_input_0 = {
-            let s = script! {
-                OP_0                              // <data=empty>
-                OP_0                              // <index=0>
-                <naked_key.serialize().to_vec()>  // <pk>
-                OP_0                              // <taptree=empty>
-                OP_0                              // <mode=0> (CHECK_OUTPUT DEFAULT)
-                OP_CHECKCONTRACTVERIFY
-                OP_1
-            };
-            s.encode_sake_script(&[dummy_oracle_pk()], 0).unwrap()
-        };
-
-        // Input 1 script: DEDUCT on output 0 — should fail with CCVAmountConflict
-        // because input 0 already used DEFAULT on output 0.
-        let script_input_1 = {
-            let s = script! {
-                OP_0                              // <data=empty>
-                OP_0                              // <index=0>
-                <naked_key.serialize().to_vec()>  // <pk>
-                OP_0                              // <taptree=empty>
-                OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
-                OP_CHECKCONTRACTVERIFY
-                OP_1
-            };
-            s.encode_sake_script(&[dummy_oracle_pk()], 1).unwrap()
-        };
-
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default(), Default::default()],
-            output: vec![output, witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, script_input_0), (1, script_input_1)]);
-        assert!(
-            matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
-            "Should fail with amount conflict when input 1 tries DEDUCT after input 0 used DEFAULT on same output: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_conflict_double_deduct() {
-        // BIP-0443: Cannot use DEDUCT twice on same output
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        let input_amount = 1000u64;
-        let prevouts = [TxOut {
-            value: Amount::from_sat(input_amount),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-        }];
-
-        let outputs = [
-            create_p2tr_output(internal_key, None, 400),
-            create_p2tr_output(internal_key, None, 400),
-        ];
-
-        // Two DEDUCT calls on same output 0
-        let ccv_script = script! {
-            // First DEDUCT on output 0
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-
-            // Second DEDUCT on same output 0 (should conflict)
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
-            "Should fail with amount conflict for double DEDUCT: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_ccv_deduct_insufficient_fires_before_conflict() {
-        // BIP-443 specifies the deduct checks in this order:
-        //   1. if residual_input_amount < outputs[index].amount: fail
-        //   2. if output_checked_default[index] or output_checked_deduct[index]: fail
-        //
-        // This test sets up a scenario where BOTH conditions are true simultaneously:
-        //   - The output amount exceeds the residual (insufficient)
-        //   - The output was already checked with DEFAULT (conflict)
-        //
-        // The spec says the residual check fires first, so the expected error is
-        // CCVInsufficientAmount, not CCVAmountConflict. An implementation that
-        // checks conflict flags first (the wrong order) returns CCVAmountConflict.
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        // Input has 1000 sats. Script will:
-        //   1. DEFAULT on output 0 (consumes full residual of 1000, residual becomes 0)
-        //   2. DEDUCT on output 0 with amount 1
-        //      → residual(0) < amount(1)      → CCVInsufficientAmount  [spec order]
-        //      → output_checked_default[0]=true → CCVAmountConflict    [wrong order]
-        let input_amount = 1000u64;
-        let prevouts = [TxOut {
-            value: Amount::from_sat(input_amount),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-        }];
-
-        let outputs = [create_p2tr_output(internal_key, None, input_amount)];
-
-        let ccv_script = script! {
-            // DEFAULT on output 0: consumes residual (1000 → 0)
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0> (CHECK_OUTPUT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-
-            // DEDUCT on output 0 with amount 1:
-            //   residual is now 0, output[0].amount is 1000 (> 0) → insufficient
-            //   output_checked_default[0] is true               → conflict
-            // Spec fires residual check first → CCVInsufficientAmount
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-        };
-
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
-        };
-
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
-            "Spec checks residual before conflict flags; expected CCVInsufficientAmount, got: {:?}",
-            result
-        );
-    }
-
-    // ========== BIP-0443 Multiple Input Aggregation Tests ==========
-
-    #[test]
-    fn test_ccv_multiple_inputs_aggregate_default() {
-        // BIP-0443 Figure 2: Multiple inputs can aggregate to same output using DEFAULT.
-        //
-        // Per the spec, each DEFAULT call accumulates into shared output_min_amount:
-        //   output_min_amount[0] += residual_input_amount  (per input)
-        //
-        // Input 0: 500 sats → output_min_amount[0] becomes 500
-        // Input 1: 500 sats → output_min_amount[0] becomes 1000
-        // Output 0 must be >= 1000.
-        //
-        // The negative case (output=999) is the critical one: it would pass silently
-        // under a broken implementation that never persists output_min_amount, because
-        // each input would independently check `0 + 500 <= 999` and succeed.
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let naked_key = keypair.x_only_public_key().0;
-
-        let internal_key = compute_expected_internal_key(&naked_key, &[]);
-
-        let prevouts = [
-            TxOut {
-                value: Amount::from_sat(500),
-                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-            },
-            TxOut {
-                value: Amount::from_sat(500),
-                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-            },
-        ];
-
-        let ccv_script_for = |input_idx: usize| {
-            let s = script! {
-                OP_0                              // <data=empty>
-                OP_0                              // <index=0>
-                <naked_key.serialize().to_vec()>  // <pk>
-                OP_0                              // <taptree=empty>
-                OP_0                              // <mode=0> (CHECK_OUTPUT)
-                OP_CHECKCONTRACTVERIFY
-                OP_1
-            };
-            s.encode_sake_script(&[dummy_oracle_pk()], input_idx)
-                .unwrap()
-        };
-
-        let make_tx = |output_amount: u64| {
-            let output = create_p2tr_output(internal_key, None, output_amount);
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
-            Transaction {
-                version: bitcoin::transaction::Version::TWO,
-                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-                input: vec![Default::default(), Default::default()],
-                output: vec![output, witness_carrier],
-            }
-        };
-
-        let scripts = [(0, ccv_script_for(0)), (1, ccv_script_for(1))];
-
-        // Success: output holds exactly the aggregated 1000 sats
-        let result = validate(&make_tx(1000), &prevouts, &scripts);
-        assert!(
-            result.is_ok(),
-            "Should succeed when output equals aggregated residuals (1000): {:?}",
-            result
-        );
-
-        // Failure: output is 1 sat short of the required 1000.
-        // A correct implementation accumulates output_min_amount across inputs, so
-        // the second input's check sees min=500 and requires 500+500=1000 > 999.
-        // A broken implementation that never persists output_min_amount would see
-        // min=0 for each input and pass (500 <= 999), so this case MUST fail to
-        // confirm accumulation is actually working.
-        let result = validate(&make_tx(999), &prevouts, &scripts);
-        assert!(
-            matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
-            "Should fail when output is 1 sat short of aggregated residuals (999): {:?}",
-            result
-        );
-    }
-
     // ========== BIP-0443 Common use cases ==========
 
     #[test]
@@ -1611,5 +618,1276 @@ mod tests {
             "Should fail when witness provides wrong old_data: {:?}",
             malicious_result
         );
+    }
+
+    /// Tests generated based on BIP-0443 and not yet reviewed
+    mod auto_generated_tests {
+        use super::*;
+
+        #[test]
+        fn test_ccv_mode_check_output_success() {
+            // BIP-0443: CCV_MODE_CHECK_OUTPUT (mode=0)
+            // Verifies output script and checks that output amount >= residual input amount
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            // Compute expected output key (no data, no taptree)
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            // Create a transaction with matching output
+            let input_amount = 1000u64;
+            let prevouts = [TxOut {
+                value: Amount::from_sat(input_amount),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            }];
+
+            // Create output with the expected key and sufficient amount
+            let outputs = [
+                create_p2tr_output(internal_key, None, input_amount), // Output 0 matches the expected key
+            ];
+            dbg!(&internal_key, &outputs[0].script_pubkey.as_bytes());
+
+            // Build the CCV script: verify output 0 has the expected key and amount
+            let ccv_script = script! {
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0> (output 0)
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0> (CHECK_OUTPUT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            // Encode the script and witness
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                result.is_ok(),
+                "CCV_MODE_CHECK_OUTPUT should succeed with matching output: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_mode_check_output_insufficient_amount() {
+            // BIP-0443: CCV_MODE_CHECK_OUTPUT with insufficient output amount should fail
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            let input_amount = 1000u64;
+            let prevouts = [TxOut {
+                value: Amount::from_sat(input_amount),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            }];
+
+            // Output has less than input amount
+            let outputs = [
+                create_p2tr_output(internal_key, None, 500), // Only 500 sats, but input is 1000
+            ];
+
+            let ccv_script = script! {
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0>
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
+                "Should fail with insufficient amount: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_mode_check_output_ignore_amount() {
+            // BIP-0443: CCV_MODE_CHECK_OUTPUT_IGNORE_AMOUNT (mode=1)
+            // Verifies output script but ignores amount entirely
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            let input_amount = 1000u64;
+            let prevouts = [TxOut {
+                value: Amount::from_sat(input_amount),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            }];
+
+            // Output has any amount (even 0 should work)
+            let outputs = [
+                create_p2tr_output(internal_key, None, 0), // 0 sats, but mode 1 ignores amount
+            ];
+
+            let ccv_script = script! {
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_1                              // <mode=1> (CHECK_OUTPUT_IGNORE_AMOUNT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                result.is_ok(),
+                "CCV_MODE_CHECK_OUTPUT_IGNORE_AMOUNT should succeed regardless of amount: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_mode_deduct_amount_success() {
+            // BIP-0443: CCV_MODE_CHECK_OUTPUT_DEDUCT_AMOUNT (mode=2)
+            // Deducts output amount from residual and allows splitting
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            let input_amount = 1000u64;
+            let prevouts = [TxOut {
+                value: Amount::from_sat(input_amount),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            }];
+
+            // First output: 400 sats (will be deducted)
+            // Second output: remaining 600 sats (verified with default mode)
+            let internal_key_2 = compute_expected_internal_key(&naked_key, &[]);
+            let outputs = [
+                create_p2tr_output(internal_key, None, 400),
+                create_p2tr_output(internal_key_2, None, 600),
+            ];
+
+            // Script that first deducts from output 0, then sends rest to output 1
+            let ccv_script = script! {
+                // First: Deduct 400 from output 0
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
+                OP_CHECKCONTRACTVERIFY
+
+                // Then: Send remaining to output 1
+                OP_0                              // <data=empty>
+                OP_1                              // <index=1>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0> (CHECK_OUTPUT)
+                OP_CHECKCONTRACTVERIFY
+
+                // Script succeeds if both CCV calls pass
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                result.is_ok(),
+                "Deduct + Default mode should work for splitting: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_mode_deduct_insufficient_amount() {
+            // BIP-0443: CCV_MODE_CHECK_OUTPUT_DEDUCT_AMOUNT with insufficient input
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            let input_amount = 500u64;
+            let prevouts = [TxOut {
+                value: Amount::from_sat(input_amount),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            }];
+
+            // Output wants 1000 but input only has 500
+            let outputs = [create_p2tr_output(internal_key, None, 1000)];
+
+            let ccv_script = script! {
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
+                "Should fail when deducting more than available: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_mode_check_input_success() {
+            // BIP-0443: CCV_MODE_CHECK_INPUT (mode=-1)
+            // Verifies another input's scriptPubKey (no amount check)
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            // Two inputs - checking input 1 from input 0
+            let prevouts = [
+                create_p2tr_output(internal_key, None, 1000),
+                create_p2tr_output(internal_key, None, 2000),
+            ];
+
+            // One output to receive funds
+            let outputs = [create_p2tr_output(internal_key, None, 3000)];
+
+            // Script that checks input 1 has the expected key
+            let ccv_script = script! {
+                OP_0                              // <data=empty>
+                OP_1                              // <index=1> (check input 1)
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                <vec![0x81u8]>                   // <mode=-1> (CHECK_INPUT) - 0x81 is minimal encoding of -1
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default(), Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                result.is_ok(),
+                "CCV_MODE_CHECK_INPUT should succeed: {:?}",
+                result
+            );
+        }
+
+        // ========== BIP-0443 Parameter Tests ==========
+
+        #[test]
+        fn test_ccv_stack_underflow() {
+            // Test that insufficient stack elements cause an error
+            use crate::tests::validate_single_script;
+            use bitcoin_script::{define_pushable, script};
+
+            define_pushable!();
+
+            let script = script! {
+                <vec![0x01u8; 32]>  // <data>
+                OP_0                // <index=0>
+                <vec![0x02u8; 32]>  // <pk>
+                // Missing <taptree> and <mode>
+                OP_CHECKCONTRACTVERIFY
+            };
+
+            let witness: Vec<Vec<u8>> = vec![];
+            let result = validate_single_script(script, witness);
+            assert!(matches!(
+                result,
+                Err(crate::Error::Exec(ExecError::InvalidStackOperation))
+            ));
+        }
+
+        #[test]
+        fn test_ccv_pk_nums_key() {
+            // BIP-0443: pk=empty buffer uses BIP-341 NUMS key
+            let nums_key = XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).unwrap();
+
+            let internal_key = compute_expected_internal_key(&nums_key, &[]);
+
+            let prevouts = [create_p2tr_output(internal_key, None, 1000)];
+
+            let outputs = [create_p2tr_output(internal_key, None, 1000)];
+
+            // Script uses empty pk (NUMS key)
+            let ccv_script = script! {
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                OP_0                              // <pk=empty> (NUMS key)
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0>
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(result.is_ok(), "Empty pk should use NUMS key: {:?}", result);
+        }
+
+        #[test]
+        fn test_ccv_data_tweak() {
+            // BIP-0443: Non-empty data applies data tweak
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let data = b"test data commitment";
+            let internal_key = compute_expected_internal_key(&naked_key, data);
+
+            let prevouts = [create_p2tr_output(internal_key, None, 1000)];
+
+            let outputs = [create_p2tr_output(internal_key, None, 1000)];
+
+            // Script with data commitment
+            let ccv_script = script! {
+                <data.to_vec()>                   // <data>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0>
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                result.is_ok(),
+                "Data tweak should be applied correctly: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_script_mismatch() {
+            // BIP-0443: Mismatched script should fail with CCVScriptMismatch
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            // Create output with wrong key (not matching the computed one)
+            let wrong_key = XOnlyPublicKey::from_str(
+                "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
+            )
+            .unwrap();
+
+            let prevouts = [create_p2tr_output(naked_key, None, 1000)];
+
+            let outputs = [create_p2tr_output(wrong_key, None, 1000)];
+
+            let ccv_script = script! {
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0>
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::CCVScriptMismatch))),
+                "Should fail with script mismatch: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_undefined_mode_succeeds() {
+            // BIP-0443: Undefined modes succeed immediately (soft fork safety)
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let prevouts = [create_p2tr_output(naked_key, None, 1000)];
+
+            // Output doesn't matter since undefined mode should succeed
+            let outputs = [TxOut {
+                value: Amount::from_sat(0),
+                script_pubkey: ScriptBuf::new(), // Invalid script
+            }];
+
+            // Mode=3 is undefined
+            let ccv_script = script! {
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_3                              // <mode=3> (undefined)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                result.is_ok(),
+                "Undefined mode should succeed for soft fork safety: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_output_index_out_of_bounds() {
+            // BIP-0443: Output index out of bounds should fail
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let prevouts = [create_p2tr_output(naked_key, None, 1000)];
+
+            // Only one output (index 0)
+            let outputs = [create_p2tr_output(naked_key, None, 1000)];
+
+            // Try to check output index 5 (doesn't exist)
+            let ccv_script = script! {
+                OP_0                              // <data=empty>
+                OP_5                              // <index=5> (out of bounds)
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0>
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::InvalidCCVIndex))),
+                "Should fail with invalid index: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_input_index_out_of_bounds() {
+            // BIP-0443: Input index out of bounds should fail
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            // Only one input
+            let prevouts = [create_p2tr_output(naked_key, None, 1000)];
+
+            let outputs = [create_p2tr_output(naked_key, None, 1000)];
+
+            // Try to check input index 3 (doesn't exist)
+            let ccv_script = script! {
+                OP_0                              // <data=empty>
+                OP_3                              // <index=3> (out of bounds)
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                <vec![0x81u8]>                   // <mode=-1> (CHECK_INPUT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::InvalidCCVIndex))),
+                "Should fail with invalid index: {:?}",
+                result
+            );
+        }
+
+        // ========== BIP-0443 Amount Conflict Tests ==========
+
+        #[test]
+        fn test_ccv_conflict_deduct_then_default() {
+            // BIP-0443: Cannot use DEFAULT after DEDUCT on same output
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            let input_amount = 1000u64;
+            let prevouts = [TxOut {
+                value: Amount::from_sat(input_amount),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            }];
+
+            let outputs = [
+                create_p2tr_output(internal_key, None, 600),
+                create_p2tr_output(internal_key, None, 400),
+            ];
+
+            // First DEDUCT on output 0, then try DEFAULT on same output 0
+            let ccv_script = script! {
+                // Deduct from output 0
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+
+                // Try to use DEFAULT on same output 0 (should conflict)
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0> (CHECK_OUTPUT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
+                "Should fail with amount conflict for DEDUCT then DEFAULT: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_conflict_default_then_deduct() {
+            // BIP-0443: Cannot use DEDUCT after DEFAULT on same output.
+            //
+            // The "DEFAULT then DEDUCT on the same output within a single input" scenario
+            // is unreachable under spec-compliant check order: DEFAULT zeroes the residual,
+            // so any subsequent DEDUCT (which reads the output's non-zero value) always hits
+            // the residual check first and returns CCVInsufficientAmount — the conflict flag
+            // is never reached.
+            //
+            // The reachable form of this conflict is cross-input: input 0 uses DEFAULT on
+            // output 0 (setting output_checked_default[0]=true), then input 1 tries DEDUCT
+            // on output 0. Input 1 has its own fresh residual (500 sats), and output 0 has
+            // value 1000, so residual(500) < amount(1000) → insufficient fires first.
+            //
+            // To make the conflict check reachable, output 0 must have a value <= input 1's
+            // residual. Set output 0 = 300, input 1 residual = 500: residual(500) >= amount(300)
+            // passes the residual check, then output_checked_default[0]=true fires as conflict.
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            // Input 0: 300 sats — uses DEFAULT on output 0 (sets output_checked_default[0])
+            // Input 1: 500 sats — tries DEDUCT on output 0 (residual 500 >= output 300, so
+            //                     residual check passes and conflict check fires)
+            let prevouts = [
+                TxOut {
+                    value: Amount::from_sat(300),
+                    script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+                },
+                TxOut {
+                    value: Amount::from_sat(500),
+                    script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+                },
+            ];
+
+            // Output 0: 300 sats — satisfies input 0's DEFAULT (300 >= 300) and has a value
+            // small enough that input 1's residual (500) passes the residual check.
+            let output = create_p2tr_output(internal_key, None, 300);
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
+
+            // Input 0 script: DEFAULT on output 0
+            let script_input_0 = {
+                let s = script! {
+                    OP_0                              // <data=empty>
+                    OP_0                              // <index=0>
+                    <naked_key.serialize().to_vec()>  // <pk>
+                    OP_0                              // <taptree=empty>
+                    OP_0                              // <mode=0> (CHECK_OUTPUT DEFAULT)
+                    OP_CHECKCONTRACTVERIFY
+                    OP_1
+                };
+                s.encode_sake_script(&[dummy_oracle_pk()], 0).unwrap()
+            };
+
+            // Input 1 script: DEDUCT on output 0 — should fail with CCVAmountConflict
+            // because input 0 already used DEFAULT on output 0.
+            let script_input_1 = {
+                let s = script! {
+                    OP_0                              // <data=empty>
+                    OP_0                              // <index=0>
+                    <naked_key.serialize().to_vec()>  // <pk>
+                    OP_0                              // <taptree=empty>
+                    OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
+                    OP_CHECKCONTRACTVERIFY
+                    OP_1
+                };
+                s.encode_sake_script(&[dummy_oracle_pk()], 1).unwrap()
+            };
+
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default(), Default::default()],
+                output: vec![output, witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, script_input_0), (1, script_input_1)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
+                "Should fail with amount conflict when input 1 tries DEDUCT after input 0 used DEFAULT on same output: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_conflict_double_deduct() {
+            // BIP-0443: Cannot use DEDUCT twice on same output
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            let input_amount = 1000u64;
+            let prevouts = [TxOut {
+                value: Amount::from_sat(input_amount),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            }];
+
+            let outputs = [
+                create_p2tr_output(internal_key, None, 400),
+                create_p2tr_output(internal_key, None, 400),
+            ];
+
+            // Two DEDUCT calls on same output 0
+            let ccv_script = script! {
+                // First DEDUCT on output 0
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+
+                // Second DEDUCT on same output 0 (should conflict)
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
+                "Should fail with amount conflict for double DEDUCT: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_deduct_insufficient_fires_before_conflict() {
+            // BIP-443 specifies the deduct checks in this order:
+            //   1. if residual_input_amount < outputs[index].amount: fail
+            //   2. if output_checked_default[index] or output_checked_deduct[index]: fail
+            //
+            // This test sets up a scenario where BOTH conditions are true simultaneously:
+            //   - The output amount exceeds the residual (insufficient)
+            //   - The output was already checked with DEFAULT (conflict)
+            //
+            // The spec says the residual check fires first, so the expected error is
+            // CCVInsufficientAmount, not CCVAmountConflict. An implementation that
+            // checks conflict flags first (the wrong order) returns CCVAmountConflict.
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            // Input has 1000 sats. Script will:
+            //   1. DEFAULT on output 0 (consumes full residual of 1000, residual becomes 0)
+            //   2. DEDUCT on output 0 with amount 1
+            //      → residual(0) < amount(1)      → CCVInsufficientAmount  [spec order]
+            //      → output_checked_default[0]=true → CCVAmountConflict    [wrong order]
+            let input_amount = 1000u64;
+            let prevouts = [TxOut {
+                value: Amount::from_sat(input_amount),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            }];
+
+            let outputs = [create_p2tr_output(internal_key, None, input_amount)];
+
+            let ccv_script = script! {
+                // DEFAULT on output 0: consumes residual (1000 → 0)
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0> (CHECK_OUTPUT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+
+                // DEDUCT on output 0 with amount 1:
+                //   residual is now 0, output[0].amount is 1000 (> 0) → insufficient
+                //   output_checked_default[0] is true               → conflict
+                // Spec fires residual check first → CCVInsufficientAmount
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
+                "Spec checks residual before conflict flags; expected CCVInsufficientAmount, got: {:?}",
+                result
+            );
+        }
+
+        // ========== BIP-0443 Multiple Input Aggregation Tests ==========
+
+        #[test]
+        fn test_ccv_multiple_inputs_aggregate_default() {
+            // BIP-0443 Figure 2: Multiple inputs can aggregate to same output using DEFAULT.
+            //
+            // Per the spec, each DEFAULT call accumulates into shared output_min_amount:
+            //   output_min_amount[0] += residual_input_amount  (per input)
+            //
+            // Input 0: 500 sats → output_min_amount[0] becomes 500
+            // Input 1: 500 sats → output_min_amount[0] becomes 1000
+            // Output 0 must be >= 1000.
+            //
+            // The negative case (output=999) is the critical one: it would pass silently
+            // under a broken implementation that never persists output_min_amount, because
+            // each input would independently check `0 + 500 <= 999` and succeed.
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            let prevouts = [
+                TxOut {
+                    value: Amount::from_sat(500),
+                    script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+                },
+                TxOut {
+                    value: Amount::from_sat(500),
+                    script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+                },
+            ];
+
+            let ccv_script_for = |input_idx: usize| {
+                let s = script! {
+                    OP_0                              // <data=empty>
+                    OP_0                              // <index=0>
+                    <naked_key.serialize().to_vec()>  // <pk>
+                    OP_0                              // <taptree=empty>
+                    OP_0                              // <mode=0> (CHECK_OUTPUT)
+                    OP_CHECKCONTRACTVERIFY
+                    OP_1
+                };
+                s.encode_sake_script(&[dummy_oracle_pk()], input_idx)
+                    .unwrap()
+            };
+
+            let make_tx = |output_amount: u64| {
+                let output = create_p2tr_output(internal_key, None, output_amount);
+                let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
+                Transaction {
+                    version: bitcoin::transaction::Version::TWO,
+                    lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                    input: vec![Default::default(), Default::default()],
+                    output: vec![output, witness_carrier],
+                }
+            };
+
+            let scripts = [(0, ccv_script_for(0)), (1, ccv_script_for(1))];
+
+            // Success: output holds exactly the aggregated 1000 sats
+            let result = validate(&make_tx(1000), &prevouts, &scripts);
+            assert!(
+                result.is_ok(),
+                "Should succeed when output equals aggregated residuals (1000): {:?}",
+                result
+            );
+
+            // Failure: output is 1 sat short of the required 1000.
+            // A correct implementation accumulates output_min_amount across inputs, so
+            // the second input's check sees min=500 and requires 500+500=1000 > 999.
+            // A broken implementation that never persists output_min_amount would see
+            // min=0 for each input and pass (500 <= 999), so this case MUST fail to
+            // confirm accumulation is actually working.
+            let result = validate(&make_tx(999), &prevouts, &scripts);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
+                "Should fail when output is 1 sat short of aggregated residuals (999): {:?}",
+                result
+            );
+        }
+
+        // ========== Moooore tests ==========
+
+        #[test]
+        fn test_ccv_negative_index_below_minus_one_fails() {
+            // BIP-443: index < -1 is invalid. Only -1 (current input) is a valid negative index.
+            // index=-2 should fail with InvalidCCVIndex.
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            let prevouts = [create_p2tr_output(internal_key, None, 1000)];
+            let outputs = [create_p2tr_output(internal_key, None, 1000)];
+
+            // Minimally encoded -2 in Script is 0x82
+            let ccv_script = script! {
+                OP_0                              // <data=empty>
+                <vec![0x82u8]>                   // <index=-2> (invalid)
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0>
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![outputs[0].clone(), witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::InvalidCCVIndex))),
+                "index=-2 should fail with InvalidCCVIndex: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_conflict_flags_are_per_output_not_global() {
+            // BIP-443: conflict flags (output_checked_deduct, output_checked_default) are
+            // tracked per output index. DEDUCT on output 0 must not prevent DEDUCT on output 1,
+            // and DEDUCT on output 0 must not prevent DEFAULT on output 1.
+            //
+            // This test confirms: DEDUCT output 0, then DEDUCT output 1, then DEFAULT output 2
+            // — all from the same input — succeeds when amounts are consistent.
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            // Input: 1000 sats
+            // DEDUCT 300 to output 0, DEDUCT 300 to output 1, DEFAULT remaining 400 to output 2
+            let input_amount = 1000u64;
+            let prevouts = [TxOut {
+                value: Amount::from_sat(input_amount),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            }];
+
+            let outputs = [
+                create_p2tr_output(internal_key, None, 300), // output 0: DEDUCT target
+                create_p2tr_output(internal_key, None, 300), // output 1: DEDUCT target
+                create_p2tr_output(internal_key, None, 400), // output 2: DEFAULT target (residual=400)
+            ];
+
+            let ccv_script = script! {
+                // DEDUCT 300 to output 0
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_2                              // <mode=2> (DEDUCT)
+                OP_CHECKCONTRACTVERIFY
+
+                // DEDUCT 300 to output 1 (different index — no conflict)
+                OP_0                              // <data=empty>
+                OP_1                              // <index=1>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_2                              // <mode=2> (DEDUCT)
+                OP_CHECKCONTRACTVERIFY
+
+                // DEFAULT remaining 400 to output 2 (different index — no conflict)
+                OP_0                              // <data=empty>
+                OP_2                              // <index=2>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0> (DEFAULT)
+                OP_CHECKCONTRACTVERIFY
+
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![
+                    outputs[0].clone(),
+                    outputs[1].clone(),
+                    outputs[2].clone(),
+                    witness_carrier,
+                ],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                result.is_ok(),
+                "DEDUCT on output 0, DEDUCT on output 1, DEFAULT on output 2 should all succeed independently: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_sequential_deducts_deplete_residual_correctly() {
+            // BIP-443: Multiple DEDUCT calls on different outputs from the same input
+            // must each reduce the residual. This test verifies that after two DEDUCTs
+            // the residual is correctly depleted and a third DEDUCT that would exceed
+            // the remaining residual fails.
+            //
+            // Input: 1000 sats
+            // DEDUCT 400 to output 0 → residual becomes 600
+            // DEDUCT 400 to output 1 → residual becomes 200
+            // DEDUCT 300 to output 2 → residual(200) < amount(300) → CCVInsufficientAmount
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            let input_amount = 1000u64;
+            let prevouts = [TxOut {
+                value: Amount::from_sat(input_amount),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            }];
+
+            let outputs = [
+                create_p2tr_output(internal_key, None, 400),
+                create_p2tr_output(internal_key, None, 400),
+                create_p2tr_output(internal_key, None, 300), // 300 > 200 remaining residual
+            ];
+
+            let ccv_script = script! {
+                // DEDUCT 400 to output 0
+                OP_0
+                OP_0
+                <naked_key.serialize().to_vec()>
+                OP_0
+                OP_2
+                OP_CHECKCONTRACTVERIFY
+
+                // DEDUCT 400 to output 1
+                OP_0
+                OP_1
+                <naked_key.serialize().to_vec()>
+                OP_0
+                OP_2
+                OP_CHECKCONTRACTVERIFY
+
+                // DEDUCT 300 to output 2 — should fail: residual=200 < 300
+                OP_0
+                OP_2
+                <naked_key.serialize().to_vec()>
+                OP_0
+                OP_2
+                OP_CHECKCONTRACTVERIFY
+
+                OP_1
+            };
+
+            let encoded_script = ccv_script
+                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .unwrap();
+
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default()],
+                output: vec![
+                    outputs[0].clone(),
+                    outputs[1].clone(),
+                    outputs[2].clone(),
+                    witness_carrier,
+                ],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
+                "Third DEDUCT should fail after residual is depleted below output amount: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn test_ccv_rename_deduct_insufficient_fires_before_conflict() {
+            // Alias / rename note: this is the same scenario as
+            // test_ccv_deduct_conflict_takes_priority_over_insufficient_amount
+            // but with a clearer name reflecting which actually fires first.
+            //
+            // Additional cross-input variant: input 0 uses DEFAULT on output 0 (residual→0,
+            // min→300). Input 1 (residual=100) tries DEDUCT on output 0 (value=300).
+            // residual(100) < amount(300) → CCVInsufficientAmount fires before conflict check.
+            let secp = Secp256k1::new();
+            let secret_key = [0x42; 32];
+            let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+            let naked_key = keypair.x_only_public_key().0;
+            let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+            let prevouts = [
+                TxOut {
+                    value: Amount::from_sat(300),
+                    script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+                },
+                TxOut {
+                    value: Amount::from_sat(100), // residual=100, less than output 0 value=300
+                    script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+                },
+            ];
+
+            let output = create_p2tr_output(internal_key, None, 300);
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
+
+            let script_input_0 = {
+                let s = script! {
+                    OP_0 OP_0 <naked_key.serialize().to_vec()> OP_0 OP_0
+                    OP_CHECKCONTRACTVERIFY
+                    OP_1
+                };
+                s.encode_sake_script(&[dummy_oracle_pk()], 0).unwrap()
+            };
+
+            // Input 1 has residual=100, output 0 has value=300:
+            // residual(100) < amount(300) → insufficient fires first (before conflict check)
+            let script_input_1 = {
+                let s = script! {
+                    OP_0 OP_0 <naked_key.serialize().to_vec()> OP_0 OP_2
+                    OP_CHECKCONTRACTVERIFY
+                    OP_1
+                };
+                s.encode_sake_script(&[dummy_oracle_pk()], 1).unwrap()
+            };
+
+            let tx = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+                input: vec![Default::default(), Default::default()],
+                output: vec![output, witness_carrier],
+            };
+
+            let result = validate(&tx, &prevouts, &[(0, script_input_0), (1, script_input_1)]);
+            assert!(
+                matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
+                "Residual check fires before conflict check even when both conditions are true: {:?}",
+                result
+            );
+        }
     }
 }
