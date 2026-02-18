@@ -322,45 +322,41 @@ impl<'a> Exec<'a> {
     }
 
     /// Check output with deduct amount semantic
-    /// Implements BIP-443 deduct amount checking logic
+    ///
+    /// BIP-443 pseudocode:
+    ///   if residual_input_amount < outputs[index].amount: fail
+    ///   if output_checked_default[index] or output_checked_deduct[index]: fail
+    ///   residual_input_amount -= outputs[index].amount
+    ///   output_checked_deduct[index] = True
     fn ccv_check_output_deduct(&mut self, index: usize, amount: u64) -> Result<(), ExecError> {
-        // Access transaction-wide state
         let tx_state = self
             .ccv_tx_state
             .ok_or(ExecError::CCVAmountConflict)?
             .borrow_mut();
 
-        // BIP-443: Check if output was already checked with default mode
-        if tx_state.output_checked_default[index] {
-            return Err(ExecError::CCVAmountConflict);
-        }
-
-        // Check if already checked with deduct (can't deduct twice)
-        if tx_state.output_checked_deduct[index] {
-            return Err(ExecError::CCVAmountConflict);
-        }
-
-        // Get residual amount from per-input state
         let residual = self
             .ccv_input_state
             .as_ref()
             .ok_or(ExecError::CCVAmountConflict)?
             .residual_input_amount;
 
-        // BIP-443: Deduct the output amount from residual
+        // BIP-443: residual check comes first.
         if residual < amount {
             return Err(ExecError::CCVInsufficientAmount);
         }
 
-        // Update the minimum amount requirement for this output
-        drop(tx_state); // Release borrow before modifying
+        // BIP-443: conflict check comes second.
+        if tx_state.output_checked_default[index] || tx_state.output_checked_deduct[index] {
+            return Err(ExecError::CCVAmountConflict);
+        }
+
+        drop(tx_state);
         if let Some(tx_state) = self.ccv_tx_state {
             let mut state = tx_state.borrow_mut();
             state.output_min_amount[index] += amount;
             state.output_checked_deduct[index] = true;
         }
 
-        // Update the residual amount for this input
         if let Some(ref mut input_state) = self.ccv_input_state {
             input_state.residual_input_amount -= amount;
         }
@@ -869,6 +865,30 @@ mod tests {
     // ========== BIP-0443 Parameter Tests ==========
 
     #[test]
+    fn test_ccv_stack_underflow() {
+        // Test that insufficient stack elements cause an error
+        use crate::tests::validate_single_script;
+        use bitcoin_script::{define_pushable, script};
+
+        define_pushable!();
+
+        let script = script! {
+            <vec![0x01u8; 32]>  // <data>
+            OP_0                // <index=0>
+            <vec![0x02u8; 32]>  // <pk>
+            // Missing <taptree> and <mode>
+            OP_CHECKCONTRACTVERIFY
+        };
+
+        let witness: Vec<Vec<u8>> = vec![];
+        let result = validate_single_script(script, witness);
+        assert!(matches!(
+            result,
+            Err(crate::Error::Exec(ExecError::InvalidStackOperation))
+        ));
+    }
+
+    #[test]
     fn test_ccv_pk_nums_key() {
         // BIP-0443: pk=empty buffer uses BIP-341 NUMS key
         let nums_key = XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).unwrap();
@@ -1201,7 +1221,22 @@ mod tests {
 
     #[test]
     fn test_ccv_conflict_default_then_deduct() {
-        // BIP-0443: Cannot use DEDUCT after DEFAULT on same output
+        // BIP-0443: Cannot use DEDUCT after DEFAULT on same output.
+        //
+        // The "DEFAULT then DEDUCT on the same output within a single input" scenario
+        // is unreachable under spec-compliant check order: DEFAULT zeroes the residual,
+        // so any subsequent DEDUCT (which reads the output's non-zero value) always hits
+        // the residual check first and returns CCVInsufficientAmount — the conflict flag
+        // is never reached.
+        //
+        // The reachable form of this conflict is cross-input: input 0 uses DEFAULT on
+        // output 0 (setting output_checked_default[0]=true), then input 1 tries DEDUCT
+        // on output 0. Input 1 has its own fresh residual (500 sats), and output 0 has
+        // value 1000, so residual(500) < amount(1000) → insufficient fires first.
+        //
+        // To make the conflict check reachable, output 0 must have a value <= input 1's
+        // residual. Set output 0 = 300, input 1 residual = 500: residual(500) >= amount(300)
+        // passes the residual check, then output_checked_default[0]=true fires as conflict.
         let secp = Secp256k1::new();
         let secret_key = [0x42; 32];
         let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
@@ -1209,51 +1244,65 @@ mod tests {
 
         let internal_key = compute_expected_internal_key(&naked_key, &[]);
 
-        let input_amount = 1000u64;
-        let prevouts = [TxOut {
-            value: Amount::from_sat(input_amount),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
-        }];
+        // Input 0: 300 sats — uses DEFAULT on output 0 (sets output_checked_default[0])
+        // Input 1: 500 sats — tries DEDUCT on output 0 (residual 500 >= output 300, so
+        //                     residual check passes and conflict check fires)
+        let prevouts = [
+            TxOut {
+                value: Amount::from_sat(300),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            },
+            TxOut {
+                value: Amount::from_sat(500),
+                script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+            },
+        ];
 
-        let outputs = [create_p2tr_output(internal_key, None, 1000)];
+        // Output 0: 300 sats — satisfies input 0's DEFAULT (300 >= 300) and has a value
+        // small enough that input 1's residual (500) passes the residual check.
+        let output = create_p2tr_output(internal_key, None, 300);
+        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
 
-        // First DEFAULT on output 0, then try DEDUCT on same output 0
-        let ccv_script = script! {
-            // DEFAULT on output 0
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_0                              // <mode=0> (CHECK_OUTPUT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
-
-            // Try to DEDUCT on same output 0 (should conflict)
-            OP_0                              // <data=empty>
-            OP_0                              // <index=0>
-            <naked_key.serialize().to_vec()>  // <pk>
-            OP_0                              // <taptree=empty>
-            OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
-            OP_CHECKCONTRACTVERIFY
-            OP_1
+        // Input 0 script: DEFAULT on output 0
+        let script_input_0 = {
+            let s = script! {
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_0                              // <mode=0> (CHECK_OUTPUT DEFAULT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+            s.encode_sake_script(&[dummy_oracle_pk()], 0).unwrap()
         };
 
-        let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
-            .unwrap();
+        // Input 1 script: DEDUCT on output 0 — should fail with CCVAmountConflict
+        // because input 0 already used DEFAULT on output 0.
+        let script_input_1 = {
+            let s = script! {
+                OP_0                              // <data=empty>
+                OP_0                              // <index=0>
+                <naked_key.serialize().to_vec()>  // <pk>
+                OP_0                              // <taptree=empty>
+                OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
+                OP_CHECKCONTRACTVERIFY
+                OP_1
+            };
+            s.encode_sake_script(&[dummy_oracle_pk()], 1).unwrap()
+        };
 
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![outputs[0].clone(), witness_carrier],
+            input: vec![Default::default(), Default::default()],
+            output: vec![output, witness_carrier],
         };
 
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+        let result = validate(&tx, &prevouts, &[(0, script_input_0), (1, script_input_1)]);
         assert!(
             matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
-            "Should fail with amount conflict for DEFAULT then DEDUCT: {:?}",
+            "Should fail with amount conflict when input 1 tries DEDUCT after input 0 used DEFAULT on same output: {:?}",
             result
         );
     }
@@ -1316,6 +1365,82 @@ mod tests {
         assert!(
             matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
             "Should fail with amount conflict for double DEDUCT: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_ccv_deduct_conflict_takes_priority_over_insufficient_amount() {
+        // BIP-443 specifies the deduct checks in this order:
+        //   1. if residual_input_amount < outputs[index].amount: fail
+        //   2. if output_checked_default[index] or output_checked_deduct[index]: fail
+        //
+        // This test sets up a scenario where BOTH conditions are true simultaneously:
+        //   - The output amount exceeds the residual (insufficient)
+        //   - The output was already checked with DEFAULT (conflict)
+        //
+        // The spec says the residual check fires first, so the expected error is
+        // CCVInsufficientAmount, not CCVAmountConflict. An implementation that
+        // checks conflict flags first (the wrong order) returns CCVAmountConflict.
+        let secp = Secp256k1::new();
+        let secret_key = [0x42; 32];
+        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+        let naked_key = keypair.x_only_public_key().0;
+
+        let internal_key = compute_expected_internal_key(&naked_key, &[]);
+
+        // Input has 1000 sats. Script will:
+        //   1. DEFAULT on output 0 (consumes full residual of 1000, residual becomes 0)
+        //   2. DEDUCT on output 0 with amount 1
+        //      → residual(0) < amount(1)      → CCVInsufficientAmount  [spec order]
+        //      → output_checked_default[0]=true → CCVAmountConflict    [wrong order]
+        let input_amount = 1000u64;
+        let prevouts = [TxOut {
+            value: Amount::from_sat(input_amount),
+            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+        }];
+
+        let outputs = [create_p2tr_output(internal_key, None, input_amount)];
+
+        let ccv_script = script! {
+            // DEFAULT on output 0: consumes residual (1000 → 0)
+            OP_0                              // <data=empty>
+            OP_0                              // <index=0>
+            <naked_key.serialize().to_vec()>  // <pk>
+            OP_0                              // <taptree=empty>
+            OP_0                              // <mode=0> (CHECK_OUTPUT)
+            OP_CHECKCONTRACTVERIFY
+            OP_1
+
+            // DEDUCT on output 0 with amount 1:
+            //   residual is now 0, output[0].amount is 1000 (> 0) → insufficient
+            //   output_checked_default[0] is true               → conflict
+            // Spec fires residual check first → CCVInsufficientAmount
+            OP_0                              // <data=empty>
+            OP_0                              // <index=0>
+            <naked_key.serialize().to_vec()>  // <pk>
+            OP_0                              // <taptree=empty>
+            OP_2                              // <mode=2> (CHECK_OUTPUT_DEDUCT_AMOUNT)
+            OP_CHECKCONTRACTVERIFY
+            OP_1
+        };
+
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
+
+        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![outputs[0].clone(), witness_carrier],
+        };
+
+        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+        assert!(
+            matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
+            "Spec checks residual before conflict flags; expected CCVInsufficientAmount, got: {:?}",
             result
         );
     }
@@ -1401,30 +1526,6 @@ mod tests {
             "Should fail when output is 1 sat short of aggregated residuals (999): {:?}",
             result
         );
-    }
-
-    #[test]
-    fn test_ccv_stack_underflow() {
-        // Test that insufficient stack elements cause an error
-        use crate::tests::validate_single_script;
-        use bitcoin_script::{define_pushable, script};
-
-        define_pushable!();
-
-        let script = script! {
-            <vec![0x01u8; 32]>  // <data>
-            OP_0                // <index=0>
-            <vec![0x02u8; 32]>  // <pk>
-            // Missing <taptree> and <mode>
-            OP_CHECKCONTRACTVERIFY
-        };
-
-        let witness: Vec<Vec<u8>> = vec![];
-        let result = validate_single_script(script, witness);
-        assert!(matches!(
-            result,
-            Err(crate::Error::Exec(ExecError::InvalidStackOperation))
-        ));
     }
 
     // ========== BIP-0443 Common use cases ==========
