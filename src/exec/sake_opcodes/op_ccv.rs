@@ -1433,4 +1433,136 @@ mod tests {
             Err(crate::Error::Exec(ExecError::InvalidStackOperation))
         ));
     }
+
+    // ========== BIP-0443 Common use cases ==========
+
+    #[test]
+    fn test_ccv_state_transition_persist_program_change_data() {
+        // BIP-0443: Test state transition where naked key and taptree persist,
+        // but data changes via witness with OP_CAT computation
+        //
+        // This demonstrates a stateful contract where:
+        // 1. Old data is passed in witness and validated against input
+        // 2. New data is computed as old_data || append_data using OP_CAT
+        // 3. Output is created with the computed new_data
+        let naked_key = XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).unwrap();
+
+        // A dummy (taptree) for the contract (actual taptree validation happens on chain)
+        let taptree: [u8; 32] = [0; 32];
+
+        // Initial data commitment - this is the expected data in the input
+        let old_data = b"old_state_nonce_1234";
+        let input_internal_key =
+            compute_expected_internal_key(&naked_key, old_data, Some(&taptree));
+
+        // Data to append (passed in witness)
+        let append_data = b"_5678";
+
+        // Compute expected new data: old_data || append_data
+        let mut new_data = old_data.to_vec();
+        new_data.extend_from_slice(append_data);
+
+        let output_internal_key =
+            compute_expected_internal_key(&naked_key, &new_data, Some(&taptree));
+
+        // Input UTXO with old data
+        let input_amount = 1000u64;
+        let prevouts = [create_p2tr_output(
+            input_internal_key,
+            None, // internal_key already has taptweak applied
+            input_amount,
+        )];
+
+        // Output UTXO with computed new data
+        let outputs = [create_p2tr_output(
+            output_internal_key,
+            None, // internal_key already has taptweak applied
+            input_amount,
+        )];
+
+        // Script that:
+        // 1. Takes old_data and append_data from witness
+        // 2. Verifies input has expected old_data
+        // 3. Computes new_data = old_data || append_data using OP_CAT
+        // 4. Creates output with computed new_data
+        //
+        // Witness provides: append_data, old_data (in that order so old_data is on top)
+        // Initial stack: <append_data> (bottom) <old_data> (top)
+        let ccv_script = script! {
+            // Step 1: Verify input has expected old_data (from witness, on top of stack)
+            // Duplicate old_data so we can use it for CCV and still have it for CAT
+            OP_DUP                            // Stack: <append_data> <old_data> <old_data>
+
+            // Push CCV params for input verification (will be consumed by first CCV)
+            <-1>                                // <index=-1>
+            <naked_key.serialize().to_vec()>    // <pk=naked_key>
+            <taptree.to_vec()>                  // <taptree=merkle_root>
+            <-1>                                // <mode=-1> (CHECK_INPUT)
+            OP_CHECKCONTRACTVERIFY
+
+            // After first CCV: Stack is <append_data> <old_data>
+            // Step 2: Compute new_data = old_data || append_data
+            OP_SWAP                           // Stack: <old_data> <append_data>
+            OP_CAT                            // Stack: <old_data || append_data>
+
+            // Step 3: Create output with computed new_data
+            OP_0                                // <index=0>
+            <naked_key.serialize().to_vec()>    // <pk=same_naked_key>
+            <taptree.to_vec()>                  // <taptree=same_merkle_root>
+            OP_0                                // <mode=0> (CHECK_OUTPUT)
+            OP_CHECKCONTRACTVERIFY
+
+            // Script succeeds if both checks pass
+            OP_1
+        };
+
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
+
+        // ==== SUCCESS CASE ====
+        // Pass correct old_data and append_data in witness
+        // Order: last element becomes top of stack
+        // We want append_data on top (popped first), old_data below
+        let witness_data = vec![append_data.to_vec(), old_data.to_vec()];
+
+        let witness_carrier = TxOut::sake_witness_carrier(&[(0, witness_data)]);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![outputs[0].clone(), witness_carrier],
+        };
+
+        let result = validate(&tx, &prevouts, &[(0, encoded_script.clone())]);
+        assert!(
+            result.is_ok(),
+            "State transition should succeed: witness old_data validated, new_data computed via OP_CAT: {:?}",
+            result
+        );
+
+        // ==== FAILURE CASE ====
+        // Try to use WRONG old_data in witness - should fail with CCVScriptMismatch
+        // This simulates an attacker trying to spend from a contract with invalid state
+        let wrong_old_data = b"fake_state_nonce_9999";
+        let malicious_witness_data = vec![append_data.to_vec(), wrong_old_data.to_vec()];
+
+        let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(0, malicious_witness_data)]);
+        let malicious_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![outputs[0].clone(), malicious_witness_carrier],
+        };
+
+        let malicious_result = validate(&malicious_tx, &prevouts, &[(0, encoded_script)]);
+        assert!(
+            matches!(
+                malicious_result,
+                Err(Error::Exec(ExecError::CCVScriptMismatch))
+            ),
+            "Should fail when witness provides wrong old_data: {:?}",
+            malicious_result
+        );
+    }
 }
