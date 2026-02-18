@@ -151,7 +151,7 @@ mod test {
     prop_compose! {
         // Generate a single byte vector (the innermost element)
         fn arb_element()(
-            len in 0..=500usize,
+            len in 0..=4069usize,
             bytes: Vec<u8>,
         ) -> Vec<u8> {
             bytes.into_iter().take(len).collect()
