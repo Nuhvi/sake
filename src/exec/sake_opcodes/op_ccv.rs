@@ -394,6 +394,11 @@ mod tests {
 
     define_pushable!();
 
+    fn dummy_oracle_pk() -> XOnlyPublicKey {
+        XOnlyPublicKey::from_str("18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166")
+            .unwrap()
+    }
+
     // Helper to create a P2TR output with specified internal key and optional taptree
     fn create_p2tr_output(
         internal_key: XOnlyPublicKey,
@@ -543,11 +548,9 @@ mod tests {
         };
 
         // Encode the script and witness
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -596,11 +599,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -650,11 +651,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -719,11 +718,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -770,11 +767,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -823,11 +818,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -870,11 +863,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -916,11 +907,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -960,11 +949,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -1010,11 +997,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -1059,11 +1044,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -1105,11 +1088,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -1151,11 +1132,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -1217,11 +1196,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -1278,11 +1255,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -1342,11 +1317,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script = ccv_script.encode_sake_script(&[internal_key], 0).unwrap();
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
         let tx = Transaction {
@@ -1413,12 +1386,9 @@ mod tests {
             OP_1
         };
 
-        let internal_key = XOnlyPublicKey::from_str(
-            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
-        )
-        .unwrap();
-        let encoded_script_0 = ccv_script_0.encode_sake_script(&[internal_key], 0).unwrap();
-        let encoded_script_1 = ccv_script_1.encode_sake_script(&[internal_key], 1).unwrap();
+        let oracle_pk = dummy_oracle_pk();
+        let encoded_script_0 = ccv_script_0.encode_sake_script(&[oracle_pk], 0).unwrap();
+        let encoded_script_1 = ccv_script_1.encode_sake_script(&[oracle_pk], 1).unwrap();
 
         let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
         let tx = Transaction {
