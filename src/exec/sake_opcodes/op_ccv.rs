@@ -635,6 +635,134 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_ccv_state_transition_persist_data_upgrade_program() {
+        // BIP-0443: Test state transition where naked key and data persist,
+        // but taptree changes (program upgrade)
+        //
+        // This demonstrates a stateful contract where:
+        // 1. Data stays the same between input and output
+        // 2. Taptree changes (representing a program upgrade)
+        // 3. New taptree is provided from witness
+        // 4. New taptree authenticated simply by authoritative signature
+        let naked_key = XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).unwrap();
+
+        // Original taptree (before upgrade)
+        let old_taptree = TapNodeHash::from_slice(&[0; 32]).unwrap();
+        // New taptree (after upgrade)
+        let new_taptree = TapNodeHash::from_slice(&[1; 32]).unwrap();
+
+        // Same data for input and output (data persists)
+        let data = b"state_data_unchanged";
+        let input_internal_key = compute_expected_internal_key(&naked_key, data);
+        let output_internal_key = compute_expected_internal_key(&naked_key, data);
+
+        // Input UTXO with old taptree
+        let input_amount = 1000u64;
+        let prevouts = [create_p2tr_output(
+            input_internal_key,
+            Some(old_taptree),
+            input_amount,
+        )];
+
+        // Output UTXO with new taptree (upgraded program)
+        let outputs = [create_p2tr_output(
+            output_internal_key,
+            Some(new_taptree),
+            input_amount,
+        )];
+
+        // Script that:
+        // 1. Takes old_data and new taptree from witness
+        // 2. Verifies input has expected old_data
+        // 3. Verifies corresponding output has expected old_data and new taptree
+        // 4. Verifies the new taptree was signed by an authority
+        //
+        // Witness provides: <signature> <new_taptree> <data> (in that order so data is on top)
+        // Initial stack: <signature> (bottom), <new_taptree>, <data> (top)
+        let ccv_script = script! {
+            // Step 1: Duplicate data for CCV check
+            OP_DUP                            // Stack: <signature> <new_taptree> <data> <data>
+
+            // Push CCV params for input verification (old_taptree)
+            <-1>                                    // <index=-1>
+            <naked_key.serialize().to_vec()>        // <pk=naked_key>
+            <old_taptree.to_byte_array().to_vec()>  // <taptree=old_taptree>
+            <CCVMode::CheckInput as i64>            // <mode=-1> (CHECK_INPUT)
+            OP_CHECKCONTRACTVERIFY                  // Stack: <signature> <taptree> <data>
+
+            // Step 2: Check output with same data but new taptree
+            <-1>                                    // <index=same as input>
+            <naked_key.serialize().to_vec()>        // <pk=same_naked_key>
+            // Pick <new_taptree> from position 3
+            <3> OP_PICK                             // Stack: <signature> <new_taptree> <data> <-1> <naked_key>
+            <CCVMode::CheckOutput as i64>           // <mode=0> (CHECK_OUTPUT)
+            OP_CHECKCONTRACTVERIFY                  // Stack: <signature> <new_taptree>
+
+            // Step 3: Verify that the new taptree is valid upgrade
+            // We use OP_DROP here to avoid actually signing and providing signature
+            OP_DROP
+            // But we could also check the signature over the new taptree at this point
+            // <upgrade_committee_pk>
+            // OP_CHECKSIGFROMSTACK
+
+            // Script succeeds if both checks pass
+            OP_1
+        };
+
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
+
+        // ==== SUCCESS CASE ====
+        // Pass data in witness
+        let witness_data = vec![new_taptree.to_byte_array().to_vec(), data.to_vec()];
+
+        let witness_carrier = TxOut::sake_witness_carrier(&[(0, witness_data)]);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![outputs[0].clone(), witness_carrier],
+        };
+
+        let result = validate(&tx, &prevouts, &[(0, encoded_script.clone())]);
+        assert!(
+            result.is_ok(),
+            "State transition should succeed: data persists, taptree upgraded: {:?}",
+            result
+        );
+
+        // ==== FAILURE CASE ====
+        // Try to use WRONG taptree in output - should fail with CCVScriptMismatch
+        let outputs_wrong_taptree = [create_p2tr_output(
+            output_internal_key,
+            Some(old_taptree), // still old_taptree, not upgraded
+            input_amount,
+        )];
+
+        let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(
+            0,
+            vec![new_taptree.to_byte_array().to_vec(), data.to_vec()],
+        )]);
+        let malicious_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![outputs_wrong_taptree[0].clone(), malicious_witness_carrier],
+        };
+
+        let malicious_result = validate(&malicious_tx, &prevouts, &[(0, encoded_script)]);
+        assert!(
+            matches!(
+                malicious_result,
+                Err(Error::Exec(ExecError::CCVScriptMismatch))
+            ),
+            "Should fail when taptree is not upgraded: {:?}",
+            malicious_result
+        );
+    }
+
     /// Tests generated based on BIP-0443 and not yet reviewed
     mod auto_generated_tests {
         use super::*;
@@ -662,7 +790,6 @@ mod tests {
             let outputs = [
                 create_p2tr_output(internal_key, None, input_amount), // Output 0 matches the expected key
             ];
-            dbg!(&internal_key, &outputs[0].script_pubkey.as_bytes());
 
             // Build the CCV script: verify output 0 has the expected key and amount
             let ccv_script = script! {
