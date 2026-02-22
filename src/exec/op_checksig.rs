@@ -18,9 +18,8 @@ impl<'a> Exec<'a> {
         let (sig, sighash_type) = if let Some((sighash_type_byte, sig)) = sig.split_last()
             && sig.len() == 64
         {
-            //TODO(stevenroose) core does not error here
             let sighash_type = TapSighashType::from_consensus_u8(*sighash_type_byte)
-                .map_err(|_| ExecError::SchnorrSigHashtype)?;
+                .unwrap_or(TapSighashType::Default);
 
             if sighash_type == TapSighashType::Default {
                 return Err(ExecError::SchnorrSigHashtype);
@@ -101,7 +100,7 @@ mod tests {
     use bitcoin::{
         Amount, TapLeafHash, TapSighashType, Transaction, TxOut,
         key::{Keypair, Secp256k1},
-        secp256k1::{self},
+        secp256k1,
         sighash::{Prevouts, SighashCache},
         taproot::LeafVersion,
     };
@@ -239,6 +238,75 @@ mod tests {
                 Ok(_) => continue,
                 Err(err) => {
                     assert_eq!(err, ExecError::NoMoreInstructions { success: true });
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_op_checksig_invalid_explicit_default_sighashtype() {
+        let secp = Secp256k1::new();
+        let keypair = Keypair::new(&secp, &mut secp256k1::rand::thread_rng());
+        let pk = keypair.x_only_public_key().0;
+
+        // 1. Define the script
+        let script = script! {
+            { pk }
+            OP_CHECKSIG
+            { 1 }
+            OP_EQUALVERIFY
+            { 1 }
+        };
+
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![],
+        };
+        let prevouts = vec![TxOut {
+            value: Amount::from_sat(1000),
+            script_pubkey: bitcoin::ScriptBuf::new(),
+        }];
+
+        // Calculate the TapLeafHash for this script
+        let leaf_hash = TapLeafHash::from_script(&script, LeafVersion::TapScript);
+
+        // Calculate the sighash (the message the interpreter will verify)
+        let mut cache = SighashCache::new(&tx);
+        let sighash = cache
+            .taproot_signature_hash(
+                0,
+                &Prevouts::All(&prevouts),
+                None,
+                Some((leaf_hash, u32::MAX)),
+                TapSighashType::Default,
+            )
+            .expect("Sighash calculation failed");
+
+        // 3. Sign the sighash
+        let msg = sighash.into();
+        let sig = secp.sign_schnorr(&msg, &keypair);
+
+        // Add an explicit TapSighashType::Default
+        let mut sig_bytes = sig.serialize().to_vec();
+        sig_bytes.push(TapSighashType::Default as u8);
+
+        // 4. Construct Witness: <sig> <pk>
+        // Note: sig is 64 bytes (Default sighash), pk is 32 bytes
+        let witness = vec![sig_bytes];
+
+        // Validate
+
+        let mut sighashcache = SighashCache::new(tx);
+        let mut exec = Exec::new(&mut sighashcache, &prevouts, 0, &script, witness).unwrap();
+
+        loop {
+            match exec.exec_next() {
+                Ok(_) => continue,
+                Err(err) => {
+                    assert_eq!(err, ExecError::SchnorrSigHashtype);
                     break;
                 }
             }

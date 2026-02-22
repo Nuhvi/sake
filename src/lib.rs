@@ -226,8 +226,6 @@ fn validate_inner<'a>(
                     });
                 }
                 Err(err) => {
-                    //  TODO: log stack
-
                     // Return execution error
                     return Err(Error::Exec(err));
                 }

@@ -55,9 +55,8 @@ fn calculate_template_hash(
     engine.input(&tx.version.0.to_le_bytes());
     engine.input(&tx.lock_time.to_consensus_u32().to_le_bytes());
 
-    // TODO: reuse sha_sequences from SighashCache
-    // when/if rust_bitcoin expose that api
-
+    // TODO: reuse sha_sequences from SighashCache when/if rust_bitcoin expose that api
+    //
     // Copied from rust bitcoin [SighashCache::common_cache_minimal_borrow]
     {
         let mut enc_sequences = sha256::Hash::engine();
