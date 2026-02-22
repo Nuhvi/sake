@@ -154,8 +154,6 @@ fn validate_inner<'a>(
     let inputs: Vec<_> = extract_encoded_scripts(inputs).map_err(Error::InvalidScriptEncoding)?;
 
     if inputs.is_empty() {
-        // TODO: add tests for this
-
         // If the transaction is not encumbered by SAKE scripts at all,
         // no need to validate it.
         //
@@ -556,7 +554,6 @@ mod tests {
 
         // Script that checks the witness data size
         let script = script! {
-            // Witness stack: [large_element]
             // Get size of top element, compare to 600, then drop the element
             OP_SIZE
             600 OP_EQUALVERIFY
@@ -636,6 +633,66 @@ mod tests {
             result_multi.is_ok(),
             "Transaction with multiple large witness elements should validate successfully: {:?}",
             result_multi.err()
+        );
+    }
+
+    #[test]
+    fn test_validate_with_no_sake_scripts() {
+        let secp = Secp256k1::new();
+        let secret_key = [0x42; 32];
+        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+        let public_key = keypair.x_only_public_key().0;
+
+        let non_sake_script = script! { OP_DROP OP_FALSE };
+
+        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![vec![]])]);
+
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![witness_carrier],
+        };
+
+        let prevouts = vec![TxOut {
+            value: Amount::from_sat(1000),
+            script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
+        }];
+
+        let result = validate(&tx, &prevouts, &[(0, non_sake_script)]);
+        assert!(
+            result.is_ok(),
+            "Transaction without SAKE scripts should validate successfully: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_validate_with_no_sake_scripts_nor_witness_carrier() {
+        let secp = Secp256k1::new();
+        let secret_key = [0x42; 32];
+        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
+        let public_key = keypair.x_only_public_key().0;
+
+        let non_sake_script = script! { OP_FALSE };
+
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![],
+        };
+
+        let prevouts = vec![TxOut {
+            value: Amount::from_sat(1000),
+            script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
+        }];
+
+        let result = validate(&tx, &prevouts, &[(0, non_sake_script)]);
+        assert!(
+            result.is_ok(),
+            "Transaction without SAKE scripts should validate successfully: {:?}",
+            result.err()
         );
     }
 }
