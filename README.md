@@ -433,10 +433,10 @@ let contract_script = script! {
     // Verify the INPUT encodes old_state in its key.
     // CCV computes: tweak(NUMS_KEY, old_state) + taptweak(taptree)
     // and checks it matches prevout[current_input].scriptPubKey.
-    <-1>            // index = current input
-    <NUMS_KEY>      // naked key
-    <taptree>       // same taptree carried forward
-    <-1>            // mode = CHECK_INPUT
+    <-1>                            // index = current input
+    <BIP341_NUMS_KEY>               // naked key
+    <taptree>                       // same taptree carried forward
+    <CCVMode::CheckInput as i64>    // mode = CHECK_INPUT
     OP_CHECKCONTRACTVERIFY
 
     // Stack: [append_data, old_state]
@@ -448,10 +448,10 @@ let contract_script = script! {
     // CCV computes: tweak(NUMS_KEY, new_state) + taptweak(taptree)
     // and checks it matches tx.output[0].scriptPubKey,
     // and that output[0].value >= input residual (amount preserved).
-    OP_0            // index = output 0
-    <NUMS_KEY>      // same naked key
-    <taptree>       // same taptree — contract logic is unchanged
-    OP_0            // mode = CHECK_OUTPUT (default amount: preserve residual)
+    OP_0                            // index = output 0
+    <BIP341_NUMS_KEY>               // same naked key
+    <taptree>                       // same taptree — contract logic is unchanged
+    <CCVMode::CheckOutput as i64>   // mode = CHECK_OUTPUT (default amount: preserve residual)
     OP_CHECKCONTRACTVERIFY
 
     OP_1

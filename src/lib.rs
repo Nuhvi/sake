@@ -51,7 +51,7 @@ pub use exec::op_amount::{
     OP_AMOUNT, OP_AMOUNT_CURRENT_INPUT_SELECTOR, OpAmountError, op_amount_input_selector,
     op_amount_output_selector,
 };
-pub use exec::op_ccv::{OP_CCV, OP_CHECKCONTRACTVERIFY};
+pub use exec::op_ccv::{BIP341_NUMS_KEY, CCVMode, OP_CCV, OP_CHECKCONTRACTVERIFY};
 pub use exec::op_csfs::{OP_CHECKSIGFROMSTACK, OP_CSFS};
 pub use exec::op_th::{OP_TEMPLATEHASH, OP_TH};
 

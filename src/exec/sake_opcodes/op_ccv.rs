@@ -20,17 +20,34 @@ pub fn OP_CCV() -> ScriptBuf {
     OP_CHECKCONTRACTVERIFY()
 }
 
-// Mode constants from BIP-443
-const CCV_MODE_CHECK_INPUT: i64 = -1;
-const CCV_MODE_CHECK_OUTPUT: i64 = 0;
-const CCV_MODE_CHECK_OUTPUT_IGNORE_AMOUNT: i64 = 1;
-const CCV_MODE_CHECK_OUTPUT_DEDUCT_AMOUNT: i64 = 2;
-
-// BIP-341 NUMS key
-const BIP341_NUMS_KEY: [u8; 32] = [
+// BIP-341 NUMS key (unspendable)
+pub const BIP341_NUMS_KEY: [u8; 32] = [
     0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60, 0x35, 0xe9, 0x7a, 0x5e,
     0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5, 0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80, 0x3a, 0xc0,
 ];
+
+#[repr(i64)]
+// Mode enum from BIP-443
+#[derive(PartialEq, PartialOrd)]
+pub enum CCVMode {
+    CheckInput = -1_i64,
+    CheckOutput = 0_i64,
+    CheckOutputIgnoreAmount = 1_i64,
+    CheckOutputDeductAmount = 2_i64,
+    Undefined = i64::MAX,
+}
+
+impl From<i64> for CCVMode {
+    fn from(value: i64) -> Self {
+        match value {
+            -1_64 => CCVMode::CheckInput,
+            0_64 => CCVMode::CheckOutput,
+            1_64 => CCVMode::CheckOutputIgnoreAmount,
+            2_64 => CCVMode::CheckOutputDeductAmount,
+            _ => CCVMode::Undefined,
+        }
+    }
+}
 
 /// Transaction-wide state for CCV amount tracking
 pub(crate) struct CCVTxState {
@@ -74,10 +91,10 @@ impl<'a> Exec<'a> {
         let data = self.stack.popstr()?;
 
         // Decode mode as minimally encoded integer (max 8 bytes for i64)
-        let mode = read_scriptint(&mode_bytes, 8)?;
+        let mode: CCVMode = read_scriptint(&mode_bytes, 8)?.into();
 
         // Undefined modes succeed immediately (soft fork safety)
-        if !(CCV_MODE_CHECK_INPUT..=CCV_MODE_CHECK_OUTPUT_DEDUCT_AMOUNT).contains(&mode) {
+        if mode == CCVMode::Undefined {
             return Ok(());
         }
 
@@ -94,7 +111,7 @@ impl<'a> Exec<'a> {
         }
 
         // Determine if checking input or output
-        let (target_script, target_amount) = if mode == CCV_MODE_CHECK_INPUT {
+        let (target_script, target_amount) = if mode == CCVMode::CheckInput {
             if index as usize >= self.prevouts.len() {
                 return Err(ExecError::InvalidCCVIndex);
             }
@@ -150,19 +167,19 @@ impl<'a> Exec<'a> {
 
         // Handle amount semantics
         match mode {
-            CCV_MODE_CHECK_OUTPUT => {
+            CCVMode::CheckOutput => {
                 // Default: preserve residual amount
                 self.ccv_check_output_default(index as usize, target_amount)?;
             }
-            CCV_MODE_CHECK_OUTPUT_DEDUCT_AMOUNT => {
+            CCVMode::CheckOutputDeductAmount => {
                 // Deduct: subtract output amount from residual
                 self.ccv_check_output_deduct(index as usize, target_amount)?;
             }
-            CCV_MODE_CHECK_OUTPUT_IGNORE_AMOUNT => {
+            CCVMode::CheckOutputIgnoreAmount => {
                 // Ignore amount: verify script only, no amount checks
                 // This mode intentionally does nothing for amount handling
             }
-            CCV_MODE_CHECK_INPUT => {
+            CCVMode::CheckInput => {
                 // Input mode: no amount checks needed
             }
             _ => {
@@ -545,25 +562,23 @@ mod tests {
         let ccv_script = script! {
             // Step 1: Verify input has expected old_data (from witness, on top of stack)
             // Duplicate old_data so we can use it for CCV and still have it for CAT
-            OP_DUP                            // Stack: <append_data> <old_data> <old_data>
+            OP_DUP                              // Stack: <append_data> <old_data> <old_data>
 
-            // Push CCV params for input verification (will be consumed by first CCV)
             <-1>                                // <index=-1>
             <naked_key.serialize().to_vec()>    // <pk=naked_key>
             <taptree.to_byte_array().to_vec()>  // <taptree>
-            <-1>                                // <mode=-1> (CHECK_INPUT)
-            OP_CHECKCONTRACTVERIFY
+            <CCVMode::CheckInput as i64>        // <mode=-1> (CHECK_INPUT)
+            OP_CHECKCONTRACTVERIFY              // Stacke: <append_data> <old_data>
 
-            // After first CCV: Stack is <append_data> <old_data>
             // Step 2: Compute new_data = old_data || append_data
-            OP_SWAP                           // Stack: <old_data> <append_data>
-            OP_CAT                            // Stack: <old_data || append_data>
+            OP_SWAP                             // Stack: <old_data> <append_data>
+            OP_CAT                              // Stack: <old_data || append_data>
 
-            // Step 3: Create output with computed new_data
-            OP_0                                // <index=0>
+            // Step 3: Check output with computed new_data but same taptree
+            <-1>                                // <index=same as input>
             <naked_key.serialize().to_vec()>    // <pk=same_naked_key>
             <taptree.to_byte_array().to_vec()>  // <taptree=same taptree>
-            OP_0                                // <mode=0> (CHECK_OUTPUT)
+            <CCVMode::CheckOutput as i64>       // (CHECK_OUTPUT)
             OP_CHECKCONTRACTVERIFY
 
             // Script succeeds if both checks pass
@@ -626,7 +641,7 @@ mod tests {
 
         #[test]
         fn test_ccv_mode_check_output_success() {
-            // BIP-0443: CCV_MODE_CHECK_OUTPUT (mode=0)
+            // BIP-0443: CCVMode::CheckOutput (mode=0)
             // Verifies output script and checks that output amount >= residual input amount
             let secp = Secp256k1::new();
             let secret_key = [0x42; 32];
@@ -676,14 +691,14 @@ mod tests {
             let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
             assert!(
                 result.is_ok(),
-                "CCV_MODE_CHECK_OUTPUT should succeed with matching output: {:?}",
+                "CCVMode::CheckOutput should succeed with matching output: {:?}",
                 result
             );
         }
 
         #[test]
         fn test_ccv_mode_check_output_insufficient_amount() {
-            // BIP-0443: CCV_MODE_CHECK_OUTPUT with insufficient output amount should fail
+            // BIP-0443: CCVMode::CheckOutput with insufficient output amount should fail
             let secp = Secp256k1::new();
             let secret_key = [0x42; 32];
             let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
@@ -734,7 +749,7 @@ mod tests {
 
         #[test]
         fn test_ccv_mode_check_output_ignore_amount() {
-            // BIP-0443: CCV_MODE_CHECK_OUTPUT_IGNORE_AMOUNT (mode=1)
+            // BIP-0443: CCVMode::CheckOutput_IGNORE_AMOUNT (mode=1)
             // Verifies output script but ignores amount entirely
             let secp = Secp256k1::new();
             let secret_key = [0x42; 32];
@@ -779,14 +794,14 @@ mod tests {
             let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
             assert!(
                 result.is_ok(),
-                "CCV_MODE_CHECK_OUTPUT_IGNORE_AMOUNT should succeed regardless of amount: {:?}",
+                "CCVMode::CheckOutput_IGNORE_AMOUNT should succeed regardless of amount: {:?}",
                 result
             );
         }
 
         #[test]
         fn test_ccv_mode_deduct_amount_success() {
-            // BIP-0443: CCV_MODE_CHECK_OUTPUT_DEDUCT_AMOUNT (mode=2)
+            // BIP-0443: CCVMode::CheckOutputDeductAmount (mode=2)
             // Deducts output amount from residual and allows splitting
             let secp = Secp256k1::new();
             let secret_key = [0x42; 32];
@@ -853,7 +868,7 @@ mod tests {
 
         #[test]
         fn test_ccv_mode_deduct_insufficient_amount() {
-            // BIP-0443: CCV_MODE_CHECK_OUTPUT_DEDUCT_AMOUNT with insufficient input
+            // BIP-0443: CCVMode::CheckOutputDeductAmount with insufficient input
             let secp = Secp256k1::new();
             let secret_key = [0x42; 32];
             let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
@@ -902,7 +917,7 @@ mod tests {
 
         #[test]
         fn test_ccv_mode_check_input_success() {
-            // BIP-0443: CCV_MODE_CHECK_INPUT (mode=-1)
+            // BIP-0443: CCVMode::CheckInput (mode=-1)
             // Verifies another input's scriptPubKey (no amount check)
             let secp = Secp256k1::new();
             let secret_key = [0x42; 32];
@@ -946,7 +961,7 @@ mod tests {
             let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
             assert!(
                 result.is_ok(),
-                "CCV_MODE_CHECK_INPUT should succeed: {:?}",
+                "CCVMode::CheckInput should succeed: {:?}",
                 result
             );
         }
