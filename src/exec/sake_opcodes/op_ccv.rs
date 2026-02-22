@@ -30,20 +30,20 @@ pub const BIP341_NUMS_KEY: [u8; 32] = [
 // Mode enum from BIP-443
 #[derive(PartialEq, PartialOrd)]
 pub enum CCVMode {
-    CheckInput = -1_i64,
-    CheckOutput = 0_i64,
-    CheckOutputIgnoreAmount = 1_i64,
-    CheckOutputDeductAmount = 2_i64,
+    CheckInput = -1,
+    CheckOutput = 0,
+    CheckOutputIgnoreAmount = 1,
+    CheckOutputDeductAmount = 2,
     Undefined = i64::MAX,
 }
 
 impl From<i64> for CCVMode {
     fn from(value: i64) -> Self {
         match value {
-            -1_64 => CCVMode::CheckInput,
-            0_64 => CCVMode::CheckOutput,
-            1_64 => CCVMode::CheckOutputIgnoreAmount,
-            2_64 => CCVMode::CheckOutputDeductAmount,
+            -1 => CCVMode::CheckInput,
+            0 => CCVMode::CheckOutput,
+            1 => CCVMode::CheckOutputIgnoreAmount,
+            2 => CCVMode::CheckOutputDeductAmount,
             _ => CCVMode::Undefined,
         }
     }
@@ -568,7 +568,7 @@ mod tests {
             <naked_key.serialize().to_vec()>    // <pk=naked_key>
             <taptree.to_byte_array().to_vec()>  // <taptree>
             <CCVMode::CheckInput as i64>        // <mode=-1> (CHECK_INPUT)
-            OP_CHECKCONTRACTVERIFY              // Stacke: <append_data> <old_data>
+            OP_CHECKCONTRACTVERIFY              // Stack: <append_data> <old_data>
 
             // Step 2: Compute new_data = old_data || append_data
             OP_SWAP                             // Stack: <old_data> <append_data>
