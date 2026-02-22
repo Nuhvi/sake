@@ -1,4 +1,4 @@
-use bitcoin::script::write_scriptint;
+use bitcoin::{Witness, script::write_scriptint};
 use core::cell::RefCell;
 use core::cmp::PartialEq;
 use std::rc::Rc;
@@ -148,9 +148,9 @@ impl Stack {
         self.0.remove(v);
     }
 
-    pub fn from_u8_vec(v: Vec<Vec<u8>>) -> Self {
+    pub fn from_witness(w: Witness) -> Self {
         let mut res = Self::new();
-        for entry in v {
+        for entry in w.to_vec() {
             res.0.push(StackEntry::StrRef(Rc::new(RefCell::new(entry))));
         }
         res

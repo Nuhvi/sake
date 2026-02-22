@@ -1,7 +1,7 @@
 use bitcoin::secp256k1;
 use core::cmp;
 
-use bitcoin::consensus::Encodable;
+use bitcoin::blockdata::witness::Witness;
 use bitcoin::hashes::{Hash, hash160, ripemd160, sha1, sha256, sha256d};
 use bitcoin::opcodes::{Opcode, all::*};
 use bitcoin::script::{self, Instruction, Script};
@@ -78,10 +78,8 @@ impl<'a> Exec<'a> {
             return Err(Error::InvalidScript(err));
         }
 
-        //TODO(stevenroose) make this more efficient
-        let witness_size = Encodable::consensus_encode(&script_witness, &mut bitcoin::io::sink())
-            .expect("witness size");
-        let start_validation_weight = VALIDATION_WEIGHT_OFFSET + witness_size as i64;
+        let witness = Witness::from_slice(&script_witness);
+        let start_validation_weight = VALIDATION_WEIGHT_OFFSET + witness.size() as i64;
 
         let leaf_hash = TapLeafHash::from_script(
             Script::from_bytes(script.as_bytes()),
@@ -98,7 +96,7 @@ impl<'a> Exec<'a> {
             instruction_position: 0,
             current_position: 0,
             cond_stack: ConditionStack::default(),
-            stack: Stack::from_u8_vec(script_witness),
+            stack: Stack::from_witness(witness),
             altstack: Stack::new(),
             validation_weight: start_validation_weight,
 
