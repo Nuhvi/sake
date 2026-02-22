@@ -106,17 +106,17 @@ Script Army Knife consists of five carefully chosen opcodes that work together t
 
 **Example use:** Verify an oracle's signature on a price feed or timestamp without requiring the oracle to sign the entire transaction.
 
-#### 3. **OP_TEMPLATEHASH** (Next-Transaction Commitment) [BIP-pr#1974](https://github.com/bitcoin/bips/pull/1974/files#bip-templatehash.md)
-*Pushes a hash of specific transaction fields to the stack*
-
-- Useful to represent outcomes or terminal states
-
-#### 4. **OP_CHECKCONTRACTVERIFY** (State-carrying UTXOs) [BIP 443](https://github.com/bitcoin/bips/blob/master/bip-0443.mediawiki)
+#### 3. **OP_CHECKCONTRACTVERIFY** (State-carrying UTXOs) [BIP 443](https://github.com/bitcoin/bips/blob/master/bip-0443.mediawiki)
 *Verifies that transaction satisfies a contract specified on the stack*
 
 - On-chain multi-party protocols
 - Multi-step transactions; reactive security
 - Settlement protocols for L2s/bridges
+
+#### 4. **OP_TEMPLATEHASH** (Next-Transaction Commitment) [BIP-446](https://github.com/bitcoin/bips/pull/1974/changes#diff-1dc83010a8fe1e5e76261fa4dc2b5ada14da9f7f0dfe967c0b5049bf8542ac54)
+*Pushes a hash of specific transaction fields to the stack*
+
+- Useful to represent outcomes or terminal states
 
 #### 5. **OP_AMOUNT** (Amount introspection) [BIP-pr#2069](https://github.com/bitcoin/bips/pull/2069/files#bip-op-amount.md)
 *Pushes the amount of the current input, or a specific input or specific output to the stack*
