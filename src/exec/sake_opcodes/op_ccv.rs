@@ -417,8 +417,10 @@ mod tests {
     use crate::{Error, validate};
     use bitcoin::key::{Keypair, Secp256k1};
     use bitcoin::secp256k1::XOnlyPublicKey;
-    use bitcoin::{Amount, ScriptBuf, Transaction, TxOut};
+    use bitcoin::{Amount, ScriptBuf, Transaction, TxOut, consensus::deserialize};
     use bitcoin_script::{define_pushable, script};
+    use hex;
+    use serde::Deserialize;
     use std::str::FromStr;
 
     define_pushable!();
@@ -761,6 +763,102 @@ mod tests {
             "Should fail when taptree is not upgraded: {:?}",
             malicious_result
         );
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct CcvExecution {
+        input_index: usize,
+        data: String,
+        index: String,
+        pk: String,
+        taptree: String,
+        flags: String,
+    }
+
+    #[derive(Deserialize)]
+    struct TestVector {
+        txid: String,
+        rawtx: String,
+        prevouts: Vec<Vec<serde_json::Value>>,
+        ccv_executions: Vec<CcvExecution>,
+        broadcast_error: Option<String>,
+    }
+
+    #[test]
+    fn test_ccv_exec_vectors() {
+        use crate::script_encoding::EncodeSakeScript;
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/exec/sake_opcodes/op_ccv/exec.json");
+        let file = std::fs::read(path).unwrap();
+
+        let vectors: Vec<TestVector> =
+            serde_json::from_slice(&file).expect("Failed to parse test vectors JSON");
+
+        for (i, tv) in vectors.iter().enumerate() {
+            println!("Running test vector {}: txid={}", i, tv.txid);
+
+            let tx_bytes = hex::decode(&tv.rawtx).expect("Invalid rawtx hex");
+            let tx: Transaction = deserialize(&tx_bytes).expect("Failed to parse rawtx");
+
+            let mut prevouts = vec![];
+            for prevout in &tv.prevouts {
+                let amount = prevout[0].as_u64().expect("Invalid amount");
+                let script_hex = prevout[1].as_str().expect("Invalid script");
+                let script_bytes = hex::decode(script_hex).expect("Invalid script hex");
+                let script = ScriptBuf::from_bytes(script_bytes);
+                prevouts.push(TxOut {
+                    value: Amount::from_sat(amount),
+                    script_pubkey: script,
+                });
+            }
+
+            for ccv_exec in &tv.ccv_executions {
+                let input_index = ccv_exec.input_index;
+                assert!(input_index < tx.input.len(), "input_index out of bounds");
+
+                let data_bytes = hex::decode(&ccv_exec.data).unwrap_or_default();
+                let index_bytes = hex::decode(&ccv_exec.index).unwrap_or_default();
+                let pk_bytes = hex::decode(&ccv_exec.pk).unwrap_or_default();
+                let taptree_bytes = hex::decode(&ccv_exec.taptree).unwrap_or_default();
+                let flags_bytes = hex::decode(&ccv_exec.flags).unwrap_or_default();
+
+                let mode: i64 = if flags_bytes.is_empty() {
+                    -1
+                } else {
+                    flags_bytes.first().copied().unwrap_or(0xFF) as i64
+                };
+
+                let ccv_script = script! {
+                    <data_bytes.clone()>
+                    <index_bytes.clone()>
+                    <pk_bytes.clone()>
+                    <taptree_bytes.clone()>
+                    <mode>
+                    OP_CHECKCONTRACTVERIFY
+                };
+
+                let encoded_script = ccv_script
+                    .encode_sake_script(&[dummy_oracle_pk()], 0)
+                    .expect("Failed to encode SAKE script");
+
+                let mut tx = tx.clone();
+                let witness_carrier = TxOut::sake_witness_carrier(&[(input_index, vec![])]);
+                tx.output.push(witness_carrier);
+
+                let result = validate(&tx, &prevouts, &[(input_index, encoded_script)]);
+
+                if tv.broadcast_error.is_some() {
+                    assert!(
+                        result.is_err(),
+                        "Test vector {} expected error but got success: {:?}",
+                        i,
+                        result
+                    );
+                }
+            }
+        }
     }
 
     /// Tests generated based on BIP-0443 and not yet reviewed
