@@ -534,6 +534,9 @@ A: Yes! If Script Army Knife opcodes are activated, you can create a direct tran
 
 ### Technical Questions
 
+**Q: Why is their a witness carrier instead of the witness field within a disabled OP_IF?**  
+A: To optionally slash Oracles for signing and publishing invalid transactions according to SAKE rules, we needs a compact stateless fraud proof — small enough to verify on-chain in an EVM or BitVM contract. Segregated Witness is not committed to in the Sighash, so it can't serve this role. The Annex is non-standard and poorly propagated, making OP_RETURN the most suitable witness carrier.
+
 **Q: Why is the witness carrier always the last output?**  
 A: This is a convention that simplifies parsing and ensures the carrier doesn't interfere with covenant logic that might count or introspect outputs.
 
