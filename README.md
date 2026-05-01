@@ -410,7 +410,7 @@ The pattern works as follows. A UTXO is created whose taproot output key is `twe
    ┌──────────────────────┐          ┌──────────────────────────────────────────┐
    │ key = tweak(K, s0)   │  spend   │ key = tweak(K, s1)                       │
    │                      │ ──────►  │                                          │
-   │ s0 = old_accumulator │          │ s1 = sha256(old_accumulator │| new_data) |
+   │ s0 = old_accumulator │          │ s1 = sha256(old_accumulator │| new_data) │
    └──────────────────────┘          └──────────────────────────────────────────┘
           verified by                               enforced by
         CCV CHECK_INPUT                          CCV CHECK_OUTPUT
@@ -458,6 +458,8 @@ let contract_script = script! {
 ```
 
 Each spend appends append_data (supplied in the witness) to the running state. The taptree is preserved unchanged across transitions, meaning the contract logic itself is immutable — only the data tweak evolves and accumulates.
+
+This pattern, enables a smart contract to (for example) keep track of a sidechain competing forks, then use a STARK proof using `OP_CAT` and `OP_TEMPLATEHASH` in a different tapscript path to prove that the heaviest sidechain authorized the withdrawal of a certain amount of funds.
 
 The same pattern generalises to any deterministic state machine — a counter, a balance sheet, a game board — where the state is hashed or committed before being encoded in the key.
 
