@@ -407,18 +407,16 @@ The pattern works as follows. A UTXO is created whose taproot output key is `twe
 
 ```
          Input UTXO                        Output UTXO
-   ┌──────────────────────┐          ┌──────────────────────┐
-   │ key = tweak(K, s0)   │  spend   │ key = tweak(K, s1)   │
-   │                      │ ──────►  │                      │
-   │ s0 = "old_state_     │          │ s1 = "old_state_     │
-   │       nonce_1234"    │          │       nonce_1234_    │
-   │                      │          │       5678"          │
-   └──────────────────────┘          └──────────────────────┘
-          verified by                        enforced by
-        CCV CHECK_INPUT                   CCV CHECK_OUTPUT
+   ┌──────────────────────┐          ┌──────────────────────────────────────────┐
+   │ key = tweak(K, s0)   │  spend   │ key = tweak(K, s1)                       │
+   │                      │ ──────►  │                                          │
+   │ s0 = old_accumulator │          │ s1 = sha256(old_accumulator │| new_data) |
+   └──────────────────────┘          └──────────────────────────────────────────┘
+          verified by                               enforced by
+        CCV CHECK_INPUT                          CCV CHECK_OUTPUT
 ```
 
-The script uses `OP_CAT` to construct the new state from witness-supplied data and `OP_CHECKCONTRACTVERIFY` in both CHECK_INPUT and CHECK_OUTPUT modes to enforce the transition:
+The script uses `OP_CAT` + `OP_SHA256` to construct the `new_accumulator` from witness-supplied data and `OP_CHECKCONTRACTVERIFY` in both CHECK_INPUT and CHECK_OUTPUT modes to enforce the transition:
 
 ```rust
 // State: a byte string that grows by appending each round.
@@ -442,7 +440,8 @@ let contract_script = script! {
     // Stack: [append_data, old_state]
     // Compute new_state = old_state || append_data
     OP_SWAP
-    OP_CAT          // Stack: [new_state]
+    OP_CAT                          // Stack: [new_state]
+    OP_SHA256                       // Stack: new_accumulator
 
     // Verify the OUTPUT encodes new_state in its key.
     // CCV computes: tweak(NUMS_KEY, new_state) + taptweak(taptree)
@@ -459,8 +458,6 @@ let contract_script = script! {
 ```
 
 Each spend appends append_data (supplied in the witness) to the running state. The taptree is preserved unchanged across transitions, meaning the contract logic itself is immutable — only the data tweak evolves and accumulates.
-
-The append-only example above is intentionally simple — new_state = old_state || append_data — to keep the pattern clear. In practice, a production append-only log would store a Merkle root as the new state: each spend updates the root by inserting the new entry and committing the updated root as the data tweak. This keeps the read and write operations as efficient as the logarithm of the number of updates. 
 
 The same pattern generalises to any deterministic state machine — a counter, a balance sheet, a game board — where the state is hashed or committed before being encoded in the key.
 

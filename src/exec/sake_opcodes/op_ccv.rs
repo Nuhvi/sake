@@ -765,6 +765,127 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_data_availability_proof_of_publication() {
+        // Data Availability / Proof of Publication using OP_CCV + OP_CAT + OP_SHA256
+        //
+        // Commits to all the data ever published through this contract.
+        //
+        // Flow:
+        // 1. Input UTXO has accumulator = prev_accumulator (a SHA256 hash)
+        // 2. Witness provides: <new_data> <prev_accumulator>
+        // 3. Script computes: new_accumulator = SHA256(new_data || prev_accumulator)
+        // 4. Output UTXO has accumulator = new_accumulator
+
+        let naked_key = XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).unwrap();
+        let taptree = TapNodeHash::from_slice(&[0; 32]).unwrap();
+
+        // Initial accumulator: a SHA256 hash (like the append-only log, but hashed)
+        let prev_accumulator: Vec<u8> = sha256::Hash::hash(b"genesis").to_byte_array().to_vec();
+
+        // New data to publish
+        let new_data: Vec<u8> = b"Hello, Bitcoin! This is a data availability proof.".to_vec();
+
+        // Compute expected new accumulator: SHA256(new_data || prev_accumulator)
+        let mut preimage = vec![];
+        preimage.extend_from_slice(&prev_accumulator);
+        preimage.extend_from_slice(&new_data);
+        let new_accumulator: Vec<u8> = sha256::Hash::hash(&preimage).to_byte_array().to_vec();
+
+        let input_internal_key = compute_expected_internal_key(&naked_key, &prev_accumulator);
+        let output_internal_key = compute_expected_internal_key(&naked_key, &new_accumulator);
+
+        // Setup input and output
+        let input_amount = 1000u64;
+        let prevouts = [create_p2tr_output(
+            input_internal_key,
+            Some(taptree),
+            input_amount,
+        )];
+
+        let outputs = [create_p2tr_output(
+            output_internal_key,
+            Some(taptree),
+            input_amount,
+        )];
+
+        // Script logic (similar to append-only log, but accumulator is hashed):
+        // Witness: [new_data, prev_accumulator]
+        // Stack: <new_data> <prev_accumulator> (prev_accumulator is TOP)
+        let ccv_script = script! {
+            // Step 1: Verify input has expected accumulator (from witness, on top of stack)
+            // Duplicate accumulator so we can use it for CCV and still have it for CAT
+            OP_DUP                              // Stack: <new_data> <accumulator> <accumulator>
+
+            <-1>                                // <index=-1>
+            <naked_key.serialize().to_vec()>    // <pk=naked_key>
+            <taptree.to_byte_array().to_vec()>  // <taptree>
+            <CCVMode::CheckInput as i64>        // <mode=-1> (CHECK_INPUT)
+            OP_CHECKCONTRACTVERIFY              // Stack: <new_data> <accumulator>
+
+            // Step 2: Compute new_data = accumulator || new_data
+            OP_SWAP                             // Stack: <prev_accumulator> <new_data>
+            OP_CAT                              // Stack: <prev_accumulator || new_data>
+            OP_SHA256                           // Stack: SHA256(prev_accumulator || new_data)
+
+            // Step 3: Check output with computed new_data but same taptree
+            <-1>                                // <index=same as input>
+            <naked_key.serialize().to_vec()>    // <pk=same_naked_key>
+            <taptree.to_byte_array().to_vec()>  // <taptree=same taptree>
+            <CCVMode::CheckOutput as i64>       // (CHECK_OUTPUT)
+            OP_CHECKCONTRACTVERIFY
+
+            // Script succeeds if both checks pass
+            OP_1
+        };
+
+        let encoded_script = ccv_script
+            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .unwrap();
+
+        // ==== SUCCESS CASE ====
+        // Witness order: [new_data, prev_accumulator]
+        // This puts new_data at bottom of stack, prev_accumulator on top (as script expects)
+        let witness_data = vec![new_data.clone(), prev_accumulator.clone()];
+
+        let witness_carrier = TxOut::sake_witness_carrier(&[(0, witness_data)]);
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![outputs[0].clone(), witness_carrier],
+        };
+
+        let result = validate(&tx, &prevouts, &[(0, encoded_script.clone())]);
+        assert!(
+            result.is_ok(),
+            "Data availability proof should succeed with correct witness: {:?}",
+            result
+        );
+
+        // ==== FAILURE CASE: Wrong prev_accumulator ====
+        let wrong_prev_accumulator: Vec<u8> = sha256::Hash::hash(b"wrong").to_byte_array().to_vec();
+        let malicious_witness = vec![new_data.clone(), wrong_prev_accumulator];
+
+        let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(0, malicious_witness)]);
+        let malicious_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![outputs[0].clone(), malicious_witness_carrier],
+        };
+
+        let malicious_result = validate(&malicious_tx, &prevouts, &[(0, encoded_script)]);
+        assert!(
+            matches!(
+                malicious_result,
+                Err(Error::Exec(ExecError::CCVScriptMismatch))
+            ),
+            "Should fail with wrong prev_accumulator: {:?}",
+            malicious_result
+        );
+    }
+
     #[derive(Deserialize)]
     #[allow(dead_code)]
     struct CcvExecution {
