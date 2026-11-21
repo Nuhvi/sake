@@ -53,18 +53,25 @@ User constructs transaction:
  - Last Output: Witness Carrier (OP_RETURN with emulation witness)
 
 #### Step 3: Send to Oracles
-User send the transaction, prevouts and scripts to each oracle
- - Oracles receive the transaction (with empty Witnesses)
- - No coordination between oracles needed
- - Each oracle validates independently
-                          
+The user sends the transaction, the prevouts, and for each SAKE input the last
+two elements of its taproot witness: the tapscript and the control block.
+  - The transaction has empty input witnesses; the emulation stack is in the witness carrier
+  - The oracle verifies each control block against its prevout
+  - No coordination between oracles needed
+  - Each oracle validates independently
+
 #### Step 4: Oracle Validation (Independent & Parallel)
 Each oracle:
-1. Extracts witness carrier from last output
-2. Extracts encoded SAKE script from each spending input
-3. Removes witness carrier from transaction
-4. Runs emulation engine with witness stacks
-5. If valid → signs transaction | If invalid → rejects
+1. Parses the witness carrier from the last output
+2. Builds each input with `SakeInput::from_witness` from `[tapscript, control_block]`
+3. Verifies each control block against the prevout
+4. Extracts the SAKE encoding from each supplied tapscript
+5. Removes the witness carrier from the transaction used for emulation
+6. Runs the emulation engine with the carrier's witness stacks
+7. If valid → signs the taproot script-spend sighash | If invalid → rejects
+
+Non-SAKE inputs are not validated and are not signed. The oracle only
+attests to inputs that contain a SAKE encoding.
 
 #### Step 5: Collect Signatures
 User collects threshold signatures from oracles
@@ -137,7 +144,7 @@ This specific combination was chosen because:
 | Proposal | Engineering effort | Ergonomicity | Status |
 |----------|-----------|----------------|--------|
 | OP_CAT only | Low |  Very Low | BIP-347 |
-| **Script Army Knife** | Medium | High | BIPs (347/348/443/#1974/??) |
+| **Script Army Knife** | Medium | High | BIPs (347/348/443/446/??) |
 | Elements/Liquid opcodes | Very High | Very High | In production |
 | Great Script Restoration | Very High | High | WIP |
 | Simplicity | Entire new paradigm | Very High | still under development |
@@ -160,9 +167,9 @@ With these five opcodes, you can build:
 
 The `sake` crate provides three main components:
 
-1. **EncodeSakeScript**: Converts emulated scripts to native Bitcoin scripts
-1. **WitnessCarrier**: Converts witnesses to an `op_return` `TxOut`
-2. **validate_and_sign()**: Validates transactions and produces signatures at oracle side.
+1. **EncodeSakeScript**: Converts emulated scripts to native Bitcoin scripts (version 0 single push or version 1 chunked)
+2. **SakeWitnessCarrier**: Encodes witness stacks in an `OP_RETURN` `TxOut`
+3. **SakeInput / validate_and_sign()**: Describes each input's tapscript and control block; validates SAKE inputs and produces script-spend signatures at the oracle side.
 
 ### For Users
 
@@ -177,7 +184,7 @@ let emulated_script = script! { /* your logic */ };
 
 // Encode into native taproot script
 let taproot_script = script! {
-    // CSV or CTLV opcodes go first, as they can't be enforced in the emulator
+    // CSV or CLTV opcodes go first, as they can't be enforced in the emulator
     100 OP_CSV OP_DROP  
     <emulated_script.encode_sake_script(&[oracle_pk], 1).unwrap()>
 };
@@ -188,23 +195,29 @@ let witness_carrier = TxOut::sake_witness_carrier(&[
         0, // Input index 
         vec![], // Witness stack (elements except for script, control block or annex)
     )
-]);
+])
+    .expect("valid SAKE witness carrier");
 tx.output.push(witness_carrier);
 ```
 
 ### For Oracles
 
 ```rust
-use sake::validate_and_sign;
+use bitcoin::Witness;
+use sake::{SakeInput, validate_and_sign};
 
-// Validate and sign if emulation succeeds
-let signature = sake::validate_and_sign(
-    keypair,
-    // Receives the following
-    &tx,
-    &prevouts,
-    &inputs  // &[(input_index, stack)]
-)?;
+// `from_witness` is the only public constructor. It takes the taproot witness
+// with the script and control block as the last two elements. It rejects an
+// annex and extracts the control block, so `validate` can check the commitment.
+let witness = Witness::from_slice(&[
+    taproot_script.to_bytes(),
+    control_block.serialize(),
+]);
+let input = SakeInput::from_witness(0, &witness)?;
+
+// Only inputs with a SAKE encoding are validated and signed.
+// Returns (input_index, script-spend SIGHASH_DEFAULT signature) pairs.
+let signatures = validate_and_sign(keypair, &tx, &prevouts, &[input])?;
 ```
 
 ## Complete Example
@@ -218,6 +231,7 @@ Here's a complete example showing a covenant that requires:
 ```rust
 use sake::{EncodeSakeScript, SakeWitnessCarrier};
 use sake::{OP_AMOUNT_CURRENT_INPUT_SELECTOR, op_amount_input_selector, op_amount_output_selector};
+use bitcoin::Witness;
 use bitcoin_script::{define_pushable, script};
 
 define_pushable!();
@@ -261,7 +275,7 @@ let emulated_script: ScriptBuf = script! {
 
 // Step 2: Create the native taproot script
 let taproot_script = script! {
-    // Native opcodes (CSV, CTLV) must come before emulated script
+    // Native opcodes (CSV, CLTV) must come before emulated script
     100 OP_CSV OP_DROP
     
     // Encoded SAKE script:
@@ -278,10 +292,11 @@ let taproot_script = script! {
 };
 
 // Step 3: Prepare the emulation witness (in reverse stack order)
+// `signature` is a `schnorr::Signature`; `message` is a byte vector.
 let emulation_witness = vec![
-    signature.to_vec(),   // OP_CHECKSIGFROMSTACK signature
-    message.to_vec(),     // OP_CHECKSIGFROMSTACK message
-    <"hello ">,           // OP_CAT input
+    signature.serialize().to_vec(),   // OP_CHECKSIGFROMSTACK signature
+    message.to_vec(),                 // OP_CHECKSIGFROMSTACK message
+    <"hello ">,                       // OP_CAT input
 ];
 
 // Step 4: Create the spending transaction
@@ -292,21 +307,30 @@ let mut spending_tx = Transaction {
 };
 
 // Add witness carrier as the last output
-spending_tx.output.push(
-    TxOut::sake_witness_carrier(&[(0, emulation_witness)])
-);
+spending_tx
+    .output
+    .push(TxOut::sake_witness_carrier(&[(0, emulation_witness)])?);
 
 // Step 5: Send to oracles for validation
-// Oracles run: sake::validate_and_sign(keypair, &spending_tx, &prevouts, &[(0, taproot_script)])
-// They return signatures if validation passes
+// The input is built from the taproot witness: [stack..., script, control_block].
+let sake_witness = Witness::from_slice(&[
+    taproot_script.to_bytes(),
+    control_block.serialize(),
+]);
+let sake_input = sake::SakeInput::from_witness(0, &sake_witness)?;
+let signatures = sake::validate_and_sign(keypair, &spending_tx, &prevouts, &[sake_input])?;
+// Each oracle returns (input_index, SIGHASH_DEFAULT script-spend signature) pairs.
 
 // Step 6: Construct final witness with oracle signatures
+// A 2-of-3 script has three CHECKSIG/CHECKSIGADD ops, so the witness
+// needs three signature slots. Use an empty element for a non-signer.
 let taproot_witness = Witness::from_slice(&[
-    oracle_2_signature.to_vec(),  // Second signature (threshold met)
-    oracle_1_signature.to_vec(),  // First signature 
+    vec![],                                   // oracle 3 did not sign
+    oracle_2_signature.serialize().to_vec(),  // pk2 slot
+    oracle_1_signature.serialize().to_vec(),  // pk1 slot (top of the stack)
 
-    taproot_script.to_vec(),      // Script
-    control_block.serialize(),    // Control block
+    taproot_script.to_bytes(),                // Script
+    control_block.serialize(),                // Control block
 ]);
 
 spending_tx.input[0].witness = taproot_witness;
@@ -323,35 +347,52 @@ The witness carrier is always the **last output** in the transaction, formatted 
 OP_RETURN <data>
 ```
 
-Where `<data>` is:
+Where `<data>` starts with the following header, followed by one group per
+SAKE input:
 ```
 "SAKE" (4 bytes)
-| VERSION (1 byte)  
+| VERSION (1 byte)
 | INPUT_INDEX (VarInt) - which input this witness is for
 | NUM_ELEMENTS (VarInt) - how many stack elements
 | [ELEMENT_LENGTH (VarInt) | ELEMENT_DATA (bytes)]...
 ```
 
+The `"SAKE"` prefix and `VERSION` are written once, not once per input.
+Each stack element is at most 520 bytes and each stack has at most 1000
+elements (the BIP-342 initial stack limits). The whole payload is a single
+push in the `OP_RETURN` output, so the output script itself can be larger
+than 520 bytes.
+
 This encodes witness stacks as: `Vec<(usize, Vec<Vec<u8>>)>` where:
 - `usize` = input index
 - `Vec<Vec<u8>>` = stack elements for that input
 
-**Important**: The witness carrier is added after generating the transaction but removed before validation. It does NOT affect `OP_TEMPLATEHASH` or signature validation—only the oracle signatures cover it.
+**Important**: The witness carrier is added after generating the transaction but
+removed before emulation. It does not affect emulated `OP_TEMPLATEHASH`,
+introspection, or emulated signature checks. The oracle signatures are over the
+real transaction, including the carrier output.
 
 ## Oracle Validation
 
 ### Oracle Responsibilities
 
-1. Parse the witness carrier from the last output
-2. Extract the encoded SAKE script from the spending input
-3. Run the emulation engine with the witness stack
-4. If emulation succeeds, sign the transaction
-5. Return the signature to the user
+1. Receive the transaction, prevouts, and each SAKE input's taproot witness
+   (`[stack..., tapscript, control_block]`)
+2. Parse the witness carrier from the last output
+3. Build each input with `SakeInput::from_witness` and verify its control block
+   against the prevout. The constructor rejects an annex and always extracts
+   the control block, so validation always checks the taproot commitment.
+4. Extract the SAKE encoding from the tapscript
+5. Run the emulation engine with the carrier's witness stack
+6. If emulation succeeds, sign the tapscript script-spend sighash (`SIGHASH_DEFAULT`)
+7. Return `(input_index, signature)` to the user
+
+Native (non-SAKE) inputs are not executed, validated, or signed.
 
 ### Oracle Independence
 
 - **No coordination**: Oracles don't communicate with each other
-- **No state**: Each validation is independent, no blockchain queries needed
+- **No state**: Each validation is independent; the oracle gets the prevouts and tapscripts from the request and needs no blockchain queries
 - **No setup**: No threshold key generation or DKG ceremonies
 - **TEE-compatible**: Can run in isolated environments
 
@@ -380,12 +421,12 @@ SAKE enables any covenant construction possible with the [MATT (Merkelize All Th
 let vault_scripts = vec![
     script! {
         // Emergency path: anyone can spend after 1 year
-        <52560> OP_CSV  // ~1 year
+        <52560> OP_CSV OP_DROP  // ~1 year
         /* .. */
     },
     script! {
         // Normal withdrawal: requires 7-day delay + template
-        <1008> OP_CSV  // ~7 days
+        <1008> OP_CSV OP_DROP  // ~7 days
 
         script!{
             OP_TEMPLATEHASH
@@ -459,7 +500,7 @@ let contract_script = script! {
 
 Each spend appends append_data (supplied in the witness) to the running state. The taptree is preserved unchanged across transitions, meaning the contract logic itself is immutable — only the data tweak evolves and accumulates.
 
-This pattern, enables a smart contract to (for example) keep track of a sidechain competing forks, then use a STARK proof using `OP_CAT` and `OP_TEMPLATEHASH` in a different tapscript path to prove that the heaviest sidechain authorized the withdrawal of a certain amount of funds.
+This pattern enables a smart contract to (for example) keep track of a sidechain competing forks, then use a STARK proof using `OP_CAT` and `OP_TEMPLATEHASH` in a different tapscript path to prove that the heaviest sidechain authorized the withdrawal of a certain amount of funds.
 
 The same pattern generalises to any deterministic state machine — a counter, a balance sheet, a game board — where the state is hashed or committed before being encoded in the key.
 
@@ -470,15 +511,20 @@ SAKE operates within specific constraints to maintain compatibility and security
 ### Technical Constraints
 
 - **Taproot only**: Only works with P2TR outputs
-- **Minimal encoding**: All script instructions must be minimally encoded
-- **No Annex**: The Annex field in Taproot witnesses is not allowed
-- **No OP_CODESEPARATOR**: Disabled (becomes a NOP)
+- **Minimal encoding**: All emulated script instructions and numbers must be minimally encoded
+- **No Annex**: `SakeInput::from_witness` rejects annex-bearing witnesses. An annex added to the final spend invalidates the oracle signature.
+- **No OP_CODESEPARATOR**: Rejected by the emulator
+- **SAKE inputs only**: The oracle validates and signs inputs that contain a SAKE encoding. Native tapscripts are not validated.
+- **Script size**: Version-0 encodings fit a single push (up to 515 script bytes). Larger scripts use version-1 chunked encoding; every push is at most 520 bytes and the total is bounded by the block weight.
+- **Witness elements**: The carrier stack is limited to 520 bytes per element and 1000 elements.
+- **Oracle count**: At most 1000 oracle keys. The native tapscript needs one initial stack element per oracle signature, and BIP-342 limits the initial stack to 1000 elements.
 
 ### Emulation Behavior
 
-- **OP_CSV and OP_CTLV are NOPs**: Must be placed before the emulated script in native script
-- **OP_SUCCESSx → FAIL**: `OP_SUCCESSx` opcodes cause failure instead of success
-- **Pre-carrier introspection**: Signature and introspection opcodes operate on the transaction *before* adding the witness carrier
+- **OP_CSV and OP_CLTV are NOPs**: They must be placed in the native script, before the encoded SAKE script. The oracle does not validate timelocks.
+- **OP_SUCCESSx → FAIL**: Implemented replacements are `OP_CAT`, `OP_CSFS`, `OP_CCV`, `OP_TEMPLATEHASH`, and `OP_AMOUNT`. Other `OP_SUCCESSx` opcodes fail when executed; the legacy disabled opcodes and `OP_RESERVED` fail even in unexecuted branches.
+- **Pre-carrier introspection**: Signature and introspection opcodes operate on the transaction *without* the witness carrier
+- **Sigop budget**: The emulator charges one signature opcode per 50 bytes of the serialized witness-carrier stack, plus one free signature opcode. It does not use the native witness size.
 
 ## Trust Model
 
@@ -486,10 +532,12 @@ SAKE operates within specific constraints to maintain compatibility and security
 
 Oracles are **not custodians**:
 - They are not involved in the locking of funds to scripts that require their signatures
-- They cannot steal funds locked to their keys until they are informed about it
+- They only validate and sign inputs that contain a SAKE encoding; native tapscripts are outside their attestation
+- They cannot steal funds before they are told which script locks them
+- After disclosure, a malicious oracle (or a malicious threshold of oracles) can sign a conflicting spend. The native script only enforces the oracle signatures, not the emulated rules.
 - They cannot prevent alternative spending paths
-- They can only refuse to sign (liveness failure)
-- Users can add fallback conditions for oracle failures
+- They can refuse to sign (liveness failure)
+- Users must use a threshold and should add fallback conditions for oracle failures
 
 ### Transparent
 
@@ -533,26 +581,26 @@ A: Yes! If Script Army Knife opcodes are activated, you can create a direct tran
 
 ### Technical Questions
 
-**Q: Why is their a witness carrier instead of the witness field within a disabled OP_IF?**  
-A: To optionally slash Oracles for signing and publishing invalid transactions according to SAKE rules, we needs a compact stateless fraud proof — small enough to verify on-chain in an EVM or BitVM contract. Segregated Witness is not committed to in the Sighash, so it can't serve this role. The Annex is non-standard and poorly propagated, making OP_RETURN the most suitable witness carrier.
+**Q: Why is there a witness carrier instead of the witness field within a disabled OP_IF?**
+A: To optionally slash Oracles for signing and publishing invalid transactions according to SAKE rules, we need a compact stateless fraud proof — small enough to verify on-chain in an EVM or BitVM contract. Segregated Witness is not committed to in the Sighash, so it can't serve this role. The Annex is non-standard and poorly propagated, making OP_RETURN the most suitable witness carrier.
 
 **Q: Why is the witness carrier always the last output?**  
 A: This is a convention that simplifies parsing and ensures the carrier doesn't interfere with covenant logic that might count or introspect outputs.
 
-**Q: Can I use OP_CSV and OP_CTLV in SAKE scripts?**  
-A: These opcodes must be placed in the native script *before* the encoded SAKE script, as they are NOPs in the emulator and need to be enforced by Bitcoin consensus.
+**Q: Can I use OP_CSV and OP_CLTV in SAKE scripts?**
+A: They must be placed in the native script *before* the encoded SAKE script. They are NOPs in the emulator, so the oracle does not check them; Bitcoin consensus enforces them. Because an oracle is stateless, it cannot check UTXO age (CSV) or the current chain height/time (CLTV) anyway.
 
 **Q: Why doesn't the witness carrier affect OP_TEMPLATEHASH?**  
-A: The carrier is removed before emulation to ensure introspection and signature opcodes operate on the "real" transaction that will be broadcast to Bitcoin (minus the carrier).
+A: The carrier is removed before emulation so introspection and emulated signature checks operate on the transaction that the covenant constrains, without the carrier. The oracle signature is over the real transaction with the carrier, so the carrier is covered by the oracle threshold.
 
 **Q: Can I nest SAKE scripts?**  
 A: No. Each SAKE script is validated independently by oracles. However, you can create complex covenants by chaining transactions with different SAKE scripts.
 
-**Q: What's the maximum size of an emulated script?**  
-A: Limited by Bitcoin's Taproot script size limits and the push size limits for the encoded SAKE script. In practice, quite large scripts are possible (similar to native Taproot).
+**Q: What's the maximum size of an emulated script?**
+A: Encoding version 0 stores the script in a single tapscript push, so it is limited to 515 bytes (520 minus the 5-byte SAKE header). Version 1 splits larger scripts into 520-byte chunk pushes; the practical limit is the block weight.
 
 **Q: Can SAKE scripts access the blockchain state?**  
-A: No. SAKE scripts operate only on transaction data (inputs, outputs, witness data). They cannot query UTXOs, block headers, or other blockchain state, nor can they enforce CSV or CTLV.
+A: No. SAKE scripts operate only on transaction data (inputs, outputs, witness data). They cannot query UTXOs, block headers, or other blockchain state, nor can they enforce CSV or CLTV. For the same reason, the oracle does not validate native tapscripts.
 
 ### Comparison Questions
 
@@ -570,9 +618,9 @@ In comparison, a SAKE oracle can run in a stateless mode in a TEE doing nothing 
 **Q How does SAKE compare to confidential-script?**
 SAKE is somewhat the opposite of [confidential-script](https://github.com/joshdoman/confidential-script-lib), as in it favors observability than confidentiality. By having the script and its witness observable on-chain, malicious oracles can be held accountable, and the community can examine the use-cases and security of Script Army Knife proposal and reason about a soft fork enabling it in the future. That being said, SAKE also encourages the use of TEE as a part of defence in depth strategy.
 
-**Q How does SAKE compare to confidential-script?**
+**Q: How does SAKE compare to blind-vault?**
 
-Similar to the previously discussed confidential-script, [Blind-vault](https://github.com/halseth/blind-vault) aims for privacy instead of observability, further more the blind signer is verifying general purpose program (compile to RiscV) as opposed to Bitcoin Script.
+Similar to the previously discussed confidential-script, [Blind-vault](https://github.com/halseth/blind-vault) aims for privacy instead of observability, furthermore the blind signer is verifying a general purpose program (compiled to RISC-V) as opposed to Bitcoin Script.
 
 ### Security Questions
 
@@ -582,7 +630,7 @@ A: Include alternative tapleafs with time-locked recovery paths or fallback to d
 **Q: Can an oracle front-run my transaction?**  
 A: Oracles see your transaction before signing, and they can see the control block after the transaction is broadcasted, so theoretically yes they can spend that same leaf script again if the taproot address is reused. 
 Use multiple independent oracles and threshold signatures to reduce this risk. 
-Consider using **TEE**-based oracles, and or oracles that have slash-able bonds on other networks.
+Consider using **TEE**-based oracles, and or oracles that have slashable bonds on other networks.
 
 **Q: Why does the witness carrier use OP_RETURN instead of the Taproot annex?**
 A: The annex would be preferable place for this data, but annex-bearing transactions are non-standard and won't relay across the p2p network today, and might carry a prohibitive meaning in a future soft fork. OP_RETURN outputs have no risk of acquiring new meaning, relay without issue, and recently the OP_RETURN size limit in most relay nodes have became significantly more liberal.
@@ -591,3 +639,7 @@ A: The annex would be preferable place for this data, but annex-bearing transact
 
 This implementation is heavily based on [Steven Roose's BitVM/rust-bitcoin-scriptexec](https://github.com/BitVM/rust-bitcoin-scriptexec).
 The Script Army Knife proposal is by [Salvatore Ingala](https://salvatoshi.com/).
+
+## License
+
+Licensed under the [MIT License](LICENSE).

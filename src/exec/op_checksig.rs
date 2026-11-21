@@ -1,8 +1,4 @@
-use bitcoin::{
-    TapSighashType, XOnlyPublicKey,
-    secp256k1::{self, Message},
-    sighash::Prevouts,
-};
+use bitcoin::{TapSighashType, XOnlyPublicKey, hashes::Hash, secp256k1, sighash::Prevouts};
 
 use crate::{
     Exec,
@@ -10,11 +6,21 @@ use crate::{
 };
 
 impl<'a> Exec<'a> {
+    /// Verifies a tapscript transaction signature.
+    ///
+    /// BIP-342 only inspects the signature for a 32-byte public key. Empty
+    /// signatures, empty public keys and unknown public key types do not need
+    /// the sighash. Delegating those cases keeps the signature bytes opaque,
+    /// as required by the unknown-key-type upgrade path.
     pub(crate) fn verify_transaction_signature(
         &mut self,
         sig: &[u8],
         pk: &[u8],
     ) -> Result<bool, ExecError> {
+        if pk.len() != 32 || sig.is_empty() {
+            return self.verify_signature(sig, pk, &[]);
+        }
+
         let (sig, sighash_type) = if let Some((sighash_type_byte, sig)) = sig.split_last()
             && sig.len() == 64
         {
@@ -39,18 +45,22 @@ impl<'a> Exec<'a> {
                 Some((self.leaf_hash, u32::MAX)),
                 sighash_type,
             )
-            .expect("Prevout consistency checked at Exec init");
+            .map_err(ExecError::Sighash)?;
 
-        self.verify_signature(sig, pk, sighash.into())
+        self.verify_signature(sig, pk, sighash.as_byte_array())
     }
 
-    /// Shared logic for all Schnorr-based signature checks (OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_CHECKSIGADD, and CSFS).
-    /// Takes a closure to provide the message digest only when needed.
+    /// Shared logic for all Schnorr-based signature checks (OP_CHECKSIG,
+    /// OP_CHECKSIGVERIFY, OP_CHECKSIGADD, and CSFS).
+    ///
+    /// `msg` is the raw BIP-340 message. BIP-348 permits messages of any
+    /// length, so this uses the crate's safe verifier instead of the
+    /// 32-byte-only `Message` wrapper.
     pub(crate) fn verify_signature(
         &mut self,
         sig_bytes: &[u8],
         pk_bytes: &[u8],
-        msg: Message,
+        msg: &[u8],
     ) -> Result<bool, ExecError> {
         // 1. Sigop Budgeting
         if !sig_bytes.is_empty() {
@@ -73,20 +83,27 @@ impl<'a> Exec<'a> {
         // 4. Known Key Type (32-byte X-Only)
         if pk_bytes.len() == 32 {
             let pk = XOnlyPublicKey::from_slice(pk_bytes).map_err(|_| ExecError::PubkeyType)?;
-
-            // Note: handle_op_checksig handles sighash bytes, so sig_bytes here is raw 64 bytes
             let sig = secp256k1::schnorr::Signature::from_slice(sig_bytes)
                 .map_err(|_| ExecError::SchnorrSigSize)?;
 
-            self.secp
-                .verify_schnorr(&sig, &msg, &pk)
-                .map_err(|_| ExecError::SchnorrSig)?;
+            if !verify_schnorr_bytes(&sig, msg, &pk) {
+                return Err(ExecError::SchnorrSig);
+            }
         }
 
         // 5. Unknown Key Type (Success/Upgrade Path)
         // If pk.len() != 32 and is not empty, it succeeds as per BIP 341/348.
         Ok(true)
     }
+}
+
+/// Verifies one Schnorr signature with a message of any length.
+fn verify_schnorr_bytes(
+    sig: &secp256k1::schnorr::Signature,
+    msg: &[u8],
+    pk: &XOnlyPublicKey,
+) -> bool {
+    crate::bip340::verify(sig.serialize(), msg, pk.serialize())
 }
 
 #[cfg(test)]
@@ -231,7 +248,7 @@ mod tests {
         // Validate
 
         let mut sighashcache = SighashCache::new(tx);
-        let mut exec = Exec::new(&mut sighashcache, &prevouts, 0, &script, witness).unwrap();
+        let mut exec = Exec::new(&secp, &mut sighashcache, &prevouts, 0, &script, witness).unwrap();
 
         loop {
             match exec.exec_next() {
@@ -300,7 +317,7 @@ mod tests {
         // Validate
 
         let mut sighashcache = SighashCache::new(tx);
-        let mut exec = Exec::new(&mut sighashcache, &prevouts, 0, &script, witness).unwrap();
+        let mut exec = Exec::new(&secp, &mut sighashcache, &prevouts, 0, &script, witness).unwrap();
 
         loop {
             match exec.exec_next() {

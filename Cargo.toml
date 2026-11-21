@@ -2,9 +2,19 @@
 name = "sake"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+description = "Script Army Knife Emulator"
+repository = "https://github.com/Nuhvi/sake"
+license = "MIT"
+keywords = ["bitcoin", "script", "tapscript", "covenants"]
+categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
 bitcoin = { version = "0.32.5", features = ["rand-std"] }
+# Temporary direct dependency for safe BIP-348 verification. rust-bitcoin
+# 0.32 pins secp256k1 0.29, whose safe API accepts only 32-byte messages.
+# Remove this dependency after rust-bitcoin uses secp256k1 0.30 or later.
+secp256k1 = "0.33.1"
 
 [dev-dependencies]
 proptest = "1.9.0"
@@ -16,3 +26,45 @@ serde_json = "1.0.146"
 bitcoin = { version = "=0.32.5", features = [ "serde" ] }
 hex = "0.4.3"
 serde = "1.0.228"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints.rust]
+missing_docs = "deny"
+unused_must_use = "deny"
+# BIP-348 verification uses the safe API of the direct secp256k1 dependency.
+# See the comment on that dependency for the removal plan.
+unsafe_code = "forbid"
+unreachable_pub = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[lints.clippy]
+# groups
+perf = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+
+# pedantic = { level = "warn", priority = -1 }
+
+# restriction
+panic = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+undocumented_unsafe_blocks = "deny"
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+fallible_impl_from = "deny"
+wildcard_enum_match_arm = "deny"
+unneeded_field_pattern = "deny"
+fn_params_excessive_bools = "deny"
+
+# Two secp256k1 versions are intentional. The direct dependency provides the
+# safe BIP-348 verifier until rust-bitcoin upgrades. Other duplicates come
+# from the dev-dependencies.
+multiple_crate_versions = "allow"

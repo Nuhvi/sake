@@ -1,7 +1,6 @@
 //! OP_TEMPLATEHASH [BIP-446](https://github.com/bitcoin/bips/pull/1974/changes#diff-1dc83010a8fe1e5e76261fa4dc2b5ada14da9f7f0dfe967c0b5049bf8542ac54)
 
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::consensus::Encodable;
 use bitcoin::hashes::{Hash, HashEngine, sha256};
 
 use bitcoin::opcodes::all::OP_RETURN_206;
@@ -9,13 +8,20 @@ use bitcoin::{Opcode, ScriptBuf};
 
 use crate::exec::{Exec, ExecError};
 
-pub const OP_CODE: Opcode = OP_RETURN_206;
+pub(crate) const OP_CODE: Opcode = OP_RETURN_206;
 
+/// Returns the `OP_TEMPLATEHASH` opcode as a one-byte script.
 #[allow(non_snake_case)]
+#[must_use]
 pub fn OP_TEMPLATEHASH() -> ScriptBuf {
     ScriptBuf::from_bytes(vec![OP_CODE.to_u8()])
 }
+
+/// Returns the `OP_TH` opcode as a one-byte script.
+///
+/// This function is an alias for [`OP_TEMPLATEHASH`].
 #[allow(non_snake_case)]
+#[must_use]
 pub fn OP_TH() -> ScriptBuf {
     OP_TEMPLATEHASH()
 }
@@ -27,11 +33,23 @@ const TEMPLATEHASH_TAG: &[u8; 32] = &[
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_th(&mut self) -> Result<(), ExecError> {
+        let tx = self.sighashcache.transaction();
+        let (sha_sequences, sha_outputs) = match self.template_hashes {
+            Some(hashes) => hashes,
+            None => {
+                let hashes = (calculate_sha_sequences(tx), calculate_sha_outputs(tx));
+                self.template_hashes = Some(hashes);
+                hashes
+            }
+        };
+
         let template_hash = calculate_template_hash(
-            self.sighashcache.transaction(),
+            tx,
             self.input_idx,
             // Annex is always disabled in SAKE emulation
             None,
+            sha_sequences,
+            sha_outputs,
         );
 
         self.stack.pushstr(template_hash.as_byte_array());
@@ -40,10 +58,30 @@ impl<'a> Exec<'a> {
     }
 }
 
+fn calculate_sha_sequences(tx: &Transaction) -> sha256::Hash {
+    let mut engine = sha256::Hash::engine();
+    for txin in tx.input.iter() {
+        engine.input(&txin.sequence.to_consensus_u32().to_le_bytes());
+    }
+    sha256::Hash::from_engine(engine)
+}
+
+fn calculate_sha_outputs(tx: &Transaction) -> sha256::Hash {
+    let mut engine = sha256::Hash::engine();
+    for txout in tx.output.iter() {
+        engine.input(&txout.value.to_sat().to_le_bytes());
+        crate::varint::encode_engine(&mut engine, txout.script_pubkey.len() as u64);
+        engine.input(txout.script_pubkey.as_bytes());
+    }
+    sha256::Hash::from_engine(engine)
+}
+
 fn calculate_template_hash(
     tx: &Transaction,
     input_index: usize,
     annex: Option<&[u8]>,
+    sha_sequences: sha256::Hash,
+    sha_outputs: sha256::Hash,
 ) -> sha256::Hash {
     let mut engine = sha256::Hash::engine();
 
@@ -54,34 +92,23 @@ fn calculate_template_hash(
     // 2. Transaction Data
     engine.input(&tx.version.0.to_le_bytes());
     engine.input(&tx.lock_time.to_consensus_u32().to_le_bytes());
-
-    // TODO: reuse sha_sequences from SighashCache when/if rust_bitcoin expose that api
-    //
-    // Copied from rust bitcoin [SighashCache::common_cache_minimal_borrow]
-    {
-        let mut enc_sequences = sha256::Hash::engine();
-        for txin in tx.input.iter() {
-            txin.sequence.consensus_encode(&mut enc_sequences).unwrap();
-        }
-        engine.input(sha256::Hash::from_engine(enc_sequences).as_ref());
-
-        // sha_outputs (Precomputed by BIP341 logic)
-        let mut enc = sha256::Hash::engine();
-        for txout in tx.output.iter() {
-            txout.consensus_encode(&mut enc).unwrap();
-        }
-        engine.input(sha256::Hash::from_engine(enc).as_ref());
-    }
+    engine.input(sha_sequences.as_ref());
+    engine.input(sha_outputs.as_ref());
 
     // 3. Data about this input
     let annex_present: u8 = if annex.is_some() { 1 } else { 0 };
     engine.input(&[annex_present]);
-    engine.input(&(input_index as u32).to_le_bytes());
+    engine.input(&u32::try_from(input_index).unwrap_or(u32::MAX).to_le_bytes());
 
     // 4. Optional Annex
     if let Some(annex_data) = annex {
-        let sha_annex = sha256::Hash::hash(annex_data);
-        engine.input(&sha_annex[..]);
+        // BIP-341 hashes the serialized annex, which includes the CompactSize
+        // length prefix. SAKE rejects annexes, so this branch is currently
+        // unreachable; keep it correct for reuse.
+        let mut annex_engine = sha256::Hash::engine();
+        crate::varint::encode_engine(&mut annex_engine, annex_data.len() as u64);
+        annex_engine.input(annex_data);
+        engine.input(sha256::Hash::from_engine(annex_engine).as_ref());
     }
 
     sha256::Hash::from_engine(engine)
@@ -90,7 +117,9 @@ fn calculate_template_hash(
 #[cfg(test)]
 mod tests {
 
-    use bitcoin::{ScriptBuf, TxOut, consensus::deserialize, sighash::SighashCache};
+    use bitcoin::{
+        ScriptBuf, TxOut, consensus::deserialize, key::Secp256k1, sighash::SighashCache,
+    };
     use serde::Deserialize;
 
     use bitcoin_script::{define_pushable, script};
@@ -112,8 +141,10 @@ mod tests {
 
     #[test]
     fn test_op_templatehash_basic() {
+        // Local copy of the BIP 446 test vectors:
+        // https://github.com/bitcoin/bips/blob/master/bip-0446/basics.json
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/exec/sake_opcodes/op_th/basic.json");
+            .join("src/exec/sake_opcodes/op_th/basics.json");
         let file = std::fs::read(path).unwrap();
 
         let vectors: Vec<TestVector> =
@@ -149,18 +180,25 @@ mod tests {
                 }
             };
 
-            let basic_script = ScriptBuf::from_bytes(witness.to_vec().first().cloned().unwrap());
+            // The taproot witness is [stack..., script, control_block]. The
+            // basic vectors have no initial stack elements, but read the
+            // script position correctly anyway.
+            let elements = witness.to_vec();
+            assert!(elements.len() >= 2, "vector {i} is not a script-path spend");
+            let script_index = elements.len() - 2;
+            let basic_script = ScriptBuf::from_bytes(elements[script_index].clone());
+            let witness_stack = elements[..script_index].to_vec();
 
             let mut sighashcache = SighashCache::new(tx);
 
+            let secp = Secp256k1::new();
             let mut exec = Exec::new(
+                &secp,
                 &mut sighashcache,
                 &prevouts,
                 tv.input_index,
-                // The basic script
                 &basic_script,
-                // no witness in basic scripts
-                vec![],
+                witness_stack,
             )
             .unwrap();
 
@@ -181,7 +219,7 @@ mod tests {
     }
 
     #[derive(Deserialize, Debug, Clone)]
-    pub struct ScriptAssetsTestVector {
+    pub(crate) struct ScriptAssetsTestVector {
         #[serde(rename = "tx")]
         pub spending_tx: String,
         #[serde(rename = "prevouts")]
@@ -198,12 +236,16 @@ mod tests {
     }
 
     #[derive(Deserialize, Debug, Clone)]
-    pub struct WitnessData {
+    pub(crate) struct WitnessData {
         pub witness: Vec<String>,
     }
 
     #[test]
     fn test_op_templatehash_script_assets() {
+        // Local copy of the BIP 446 test vectors:
+        // https://github.com/bitcoin/bips/blob/master/bip-0446/script_assets_test.json
+        // The upstream file has a trailing comma that makes it invalid JSON;
+        // this copy removes it so serde_json accepts the file.
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src/exec/sake_opcodes/op_th/script_assets_test.json");
         let file = std::fs::read(path).unwrap();
@@ -251,11 +293,11 @@ mod tests {
                     }
                 };
 
-                // For some reason these test vectors don't have control block
+                // The script is the penultimate witness element for P2TR
+                // script-path spends and the last element for segwit v0.
                 let script_index = if prevouts[tv.input_index].script_pubkey.is_p2tr() {
                     witness.len().saturating_sub(2)
                 } else {
-                    // segwit
                     witness.len().saturating_sub(1)
                 };
 
@@ -266,7 +308,9 @@ mod tests {
                 });
                 let witness_stack = witness[0..script_index].to_vec();
 
+                let secp = Secp256k1::new();
                 let mut exec = Exec::new(
+                    &secp,
                     &mut sighashcache,
                     &prevouts,
                     tv.input_index,
@@ -281,9 +325,14 @@ mod tests {
                         Ok(_) => continue,
                         Err(err) => {
                             if tv.comment == "discouraged_template/emptystack" {
-                                // returns an empty stack
+                                // These vectors are marked valid only without
+                                // the TEMPLATEHASH flag, where the opcode is
+                                // OP_SUCCESS. SAKE always enables the opcode, so
+                                // the emulated script leaves a failing stack.
                                 assert_eq!(err, ExecError::NoMoreInstructions { success: false });
                             } else if script.is_empty() && witness.is_empty() {
+                                // No script and no stack leaves an empty stack,
+                                // which fails the cleanstack rule.
                                 assert_eq!(err, ExecError::NoMoreInstructions { success: false });
                             } else {
                                 assert_eq!(err, ExecError::NoMoreInstructions { success: true });
@@ -310,11 +359,11 @@ mod tests {
                     }
                 };
 
-                // For some reason these test vectors don't have control block
+                // The script is the penultimate witness element for P2TR
+                // script-path spends and the last element for segwit v0.
                 let script_index = if prevouts[tv.input_index].script_pubkey.is_p2tr() {
                     witness.len().saturating_sub(2)
                 } else {
-                    // segwit
                     witness.len().saturating_sub(1)
                 };
 
@@ -325,7 +374,9 @@ mod tests {
                 });
                 let witness_stack = witness[0..script_index].to_vec();
 
+                let secp = Secp256k1::new();
                 let mut exec = Exec::new(
+                    &secp,
                     &mut sighashcache,
                     &prevouts,
                     tv.input_index,

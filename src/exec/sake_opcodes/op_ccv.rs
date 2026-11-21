@@ -10,30 +10,50 @@ use crate::exec::{ExecError, read_scriptint};
 
 pub(crate) const OP_CODE: Opcode = OP_RETURN_187; // 0xbb
 
+/// Returns the `OP_CHECKCONTRACTVERIFY` opcode as a one-byte script.
 #[allow(non_snake_case)]
+#[must_use]
 pub fn OP_CHECKCONTRACTVERIFY() -> ScriptBuf {
     ScriptBuf::from_bytes(vec![OP_CODE.to_u8()])
 }
 
+/// Returns the `OP_CCV` opcode as a one-byte script.
+///
+/// This function is an alias for [`OP_CHECKCONTRACTVERIFY`].
 #[allow(non_snake_case)]
+#[must_use]
 pub fn OP_CCV() -> ScriptBuf {
     OP_CHECKCONTRACTVERIFY()
 }
 
-// BIP-341 NUMS key (unspendable)
+/// Returns true when `bytes` holds the minimal encoding of -1 (`0x81`).
+fn is_minimal_minus_one(bytes: &[u8]) -> bool {
+    bytes == [0x81]
+}
+
+/// The BIP-341 NUMS point, used as an unspendable internal key.
 pub const BIP341_NUMS_KEY: [u8; 32] = [
     0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60, 0x35, 0xe9, 0x7a, 0x5e,
     0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5, 0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80, 0x3a, 0xc0,
 ];
 
+/// The BIP-443 check mode.
+///
+/// BIP-443 uses the mode to select the target of a check and the amount
+/// semantic. Mode values outside the defined range keep the script
+/// forward-compatible: the opcode succeeds without a check.
 #[repr(i64)]
-// Mode enum from BIP-443
 #[derive(PartialEq, PartialOrd)]
 pub enum CCVMode {
+    /// Checks an input and its amount.
     CheckInput = -1,
+    /// Checks an output and its amount.
     CheckOutput = 0,
+    /// Checks an output script and ignores the amount.
     CheckOutputIgnoreAmount = 1,
+    /// Checks an output and deducts its amount from the input.
     CheckOutputDeductAmount = 2,
+    /// A mode value that BIP-443 does not define.
     Undefined = i64::MAX,
 }
 
@@ -49,15 +69,18 @@ impl From<i64> for CCVMode {
     }
 }
 
-/// Transaction-wide state for CCV amount tracking
+/// Transaction-wide state for CCV amount checks.
 pub(crate) struct CCVTxState {
-    pub output_min_amount: Vec<u64>,
-    pub output_checked_default: Vec<bool>,
-    pub output_checked_deduct: Vec<bool>,
+    /// Minimum amount that each output must hold.
+    pub(crate) output_min_amount: Vec<u64>,
+    /// True when a DEFAULT check used the output.
+    pub(crate) output_checked_default: Vec<bool>,
+    /// True when a DEDUCT check used the output.
+    pub(crate) output_checked_deduct: Vec<bool>,
 }
 
 impl CCVTxState {
-    pub fn new(n_outputs: usize) -> Self {
+    pub(crate) fn new(n_outputs: usize) -> Self {
         Self {
             output_min_amount: vec![0; n_outputs],
             output_checked_default: vec![false; n_outputs],
@@ -66,13 +89,14 @@ impl CCVTxState {
     }
 }
 
-/// Per-input state for CCV
-pub struct CCVInputState {
-    pub residual_input_amount: u64,
+/// Per-input state for CCV amount checks.
+pub(crate) struct CCVInputState {
+    /// Input amount that is not yet committed to an output.
+    pub(crate) residual_input_amount: u64,
 }
 
 impl CCVInputState {
-    pub fn new(input_amount: u64) -> Self {
+    pub(crate) fn new(input_amount: u64) -> Self {
         Self {
             residual_input_amount: input_amount,
         }
@@ -81,57 +105,54 @@ impl CCVInputState {
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_ccv(&mut self) -> Result<(), ExecError> {
-        // Stack format (bottom to top): <mode> <taptree> <pk> <index> <data>
+        // Stack format (bottom to top): <data> <index> <pk> <taptree> <mode>.
+        //
+        // Only the mode is needed to decide whether this is an undefined
+        // (forward-compatible) mode, which makes the whole script succeed.
+        let mode_bytes = self.stack.topstr(-1)?;
+        let mode_value = read_scriptint(&mode_bytes, 4)?;
+        if !(-1..=2).contains(&mode_value) {
+            return Err(ExecError::NoMoreInstructions { success: true });
+        }
+
         self.stack.needn(5)?;
 
-        let mode_bytes = self.stack.popstr()?;
+        let mode: CCVMode = mode_value.into();
+        // Pop the mode bytes. `mode_value` already holds the decoded value.
+        self.stack.popstr()?;
         let taptree = self.stack.popstr()?;
         let pk = self.stack.popstr()?;
         let index_bytes = self.stack.popstr()?;
         let data = self.stack.popstr()?;
 
-        // Decode mode as minimally encoded integer (max 8 bytes for i64)
-        let mode: CCVMode = read_scriptint(&mode_bytes, 8)?.into();
-
-        // Undefined modes succeed immediately (soft fork safety)
-        if mode == CCVMode::Undefined {
-            return Ok(());
-        }
-
         // Decode index
-        let mut index = read_scriptint(&index_bytes, 8)?;
+        let mut index = read_scriptint(&index_bytes, 4)?;
 
         // Replace -1 with current input index
         if index == -1 {
-            index = self.input_idx as i64;
+            index = i64::try_from(self.input_idx).map_err(|_| ExecError::InvalidCCVIndex)?;
         }
 
         if index < 0 {
             return Err(ExecError::InvalidCCVIndex);
         }
+        let index = usize::try_from(index).map_err(|_| ExecError::InvalidCCVIndex)?;
 
         // Determine if checking input or output
         let (target_script, target_amount) = if mode == CCVMode::CheckInput {
-            if index as usize >= self.prevouts.len() {
+            let prevout = self.prevouts.get(index).ok_or(ExecError::InvalidCCVIndex)?;
+            if index >= self.sighashcache.transaction().input.len() {
                 return Err(ExecError::InvalidCCVIndex);
             }
-            (
-                self.prevouts[index as usize].script_pubkey.to_bytes(),
-                self.prevouts[index as usize].value.to_sat(),
-            )
+            (prevout.script_pubkey.to_bytes(), prevout.value.to_sat())
         } else {
             let tx = self.sighashcache.transaction();
-            if index as usize >= tx.output.len() {
-                return Err(ExecError::InvalidCCVIndex);
-            }
-            (
-                tx.output[index as usize].script_pubkey.to_bytes(),
-                tx.output[index as usize].value.to_sat(),
-            )
+            let output = tx.output.get(index).ok_or(ExecError::InvalidCCVIndex)?;
+            (output.script_pubkey.to_bytes(), output.value.to_sat())
         };
 
         // Process taptree parameter
-        let taptree_hash = if self.is_minimal_minus_one(&taptree) {
+        let taptree_hash = if is_minimal_minus_one(&taptree) {
             // Use current input's taptree
             Some(self.current_input_taptree()?)
         } else if taptree.is_empty() {
@@ -146,7 +167,7 @@ impl<'a> Exec<'a> {
         let naked_key = if pk.is_empty() {
             // Empty buffer = NUMS key
             XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).map_err(|_| ExecError::InvalidCCVPubkey)?
-        } else if self.is_minimal_minus_one(&pk) {
+        } else if is_minimal_minus_one(&pk) {
             // -1 = current input's internal key
             self.current_input_internal_key()?
         } else if pk.len() == 32 {
@@ -160,7 +181,7 @@ impl<'a> Exec<'a> {
             self.compute_ccv_internal_key(&naked_key, &data, taptree_hash.as_ref())?;
 
         // Verify target script matches expected P2TR
-        let expected_script = self.make_p2tr_script(&internal_key)?;
+        let expected_script = Self::make_p2tr_script(&internal_key);
         if target_script != expected_script {
             return Err(ExecError::CCVScriptMismatch);
         }
@@ -169,11 +190,11 @@ impl<'a> Exec<'a> {
         match mode {
             CCVMode::CheckOutput => {
                 // Default: preserve residual amount
-                self.ccv_check_output_default(index as usize, target_amount)?;
+                self.ccv_check_output_default(index, target_amount)?;
             }
             CCVMode::CheckOutputDeductAmount => {
                 // Deduct: subtract output amount from residual
-                self.ccv_check_output_deduct(index as usize, target_amount)?;
+                self.ccv_check_output_deduct(index, target_amount)?;
             }
             CCVMode::CheckOutputIgnoreAmount => {
                 // Ignore amount: verify script only, no amount checks
@@ -182,8 +203,9 @@ impl<'a> Exec<'a> {
             CCVMode::CheckInput => {
                 // Input mode: no amount checks needed
             }
-            _ => {
-                // Undefined modes are handled earlier (return success)
+            CCVMode::Undefined => {
+                // The mode range check above rejects this value.
+                return Err(ExecError::InvalidCCVIndex);
             }
         }
 
@@ -202,7 +224,7 @@ impl<'a> Exec<'a> {
 
         // Apply data tweak if data is non-empty
         if !data.is_empty() {
-            let data_tweak = self.compute_data_tweak(naked_key, data)?;
+            let data_tweak = Self::compute_data_tweak(naked_key, data);
             current_key = self.tweak_pubkey(&current_key, &data_tweak)?;
         }
 
@@ -215,13 +237,12 @@ impl<'a> Exec<'a> {
     }
 
     /// Compute data tweak: SHA256(pk || data)
-    fn compute_data_tweak(&self, pk: &XOnlyPublicKey, data: &[u8]) -> Result<[u8; 32], ExecError> {
+    fn compute_data_tweak(pk: &XOnlyPublicKey, data: &[u8]) -> [u8; 32] {
         let mut preimage = Vec::with_capacity(32 + data.len());
         preimage.extend_from_slice(&pk.serialize());
         preimage.extend_from_slice(data);
 
-        let hash = sha256::Hash::hash(&preimage);
-        Ok(hash.to_byte_array())
+        sha256::Hash::hash(&preimage).to_byte_array()
     }
 
     /// Tweak a public key with a 32-byte tweak using point addition
@@ -244,9 +265,9 @@ impl<'a> Exec<'a> {
         let tweak_scalar =
             secp256k1::SecretKey::from_slice(tweak).map_err(|_| ExecError::SchnorrSig)?;
 
-        // T * G - need a signing context for this
-        let secp_sign = secp256k1::Secp256k1::signing_only();
-        let tweak_point = PublicKey::from_secret_key(&secp_sign, &tweak_scalar);
+        // T * G - reuse the executor's signing context instead of creating
+        // one for every OP_CHECKCONTRACTVERIFY evaluation.
+        let tweak_point = PublicKey::from_secret_key(self.secp, &tweak_scalar);
 
         // Compute Q = P + T (point addition)
         let tweaked = full_pk
@@ -254,9 +275,7 @@ impl<'a> Exec<'a> {
             .map_err(|_| ExecError::SchnorrSig)?;
 
         // Convert back to XOnlyPublicKey
-        let tweaked_bytes = tweaked.serialize();
-        // Skip the first byte (compression prefix) and take the 32 X-coordinate bytes
-        XOnlyPublicKey::from_slice(&tweaked_bytes[1..]).map_err(|_| ExecError::SchnorrSig)
+        Ok(tweaked.x_only_public_key().0)
     }
 
     /// Apply BIP-341 taptweak
@@ -273,12 +292,12 @@ impl<'a> Exec<'a> {
         // Tagged hash prefix for TapTweak
         let tag = b"TapTweak";
         let tag_hash = sha256::Hash::hash(tag);
-        engine.input(&tag_hash[..]);
-        engine.input(&tag_hash[..]);
+        engine.input(tag_hash.as_byte_array());
+        engine.input(tag_hash.as_byte_array());
 
         // Input: pk || taptree
         engine.input(&pk.serialize());
-        engine.input(&taptree[..]);
+        engine.input(taptree.as_byte_array());
 
         let tweak_hash = bitcoin::hashes::sha256::Hash::from_engine(engine);
 
@@ -300,7 +319,11 @@ impl<'a> Exec<'a> {
             .ok_or(ExecError::CCVAmountConflict)?
             .borrow_mut();
 
-        if tx_state.output_checked_deduct[index] {
+        if *tx_state
+            .output_checked_deduct
+            .get(index)
+            .ok_or(ExecError::CCVAmountConflict)?
+        {
             return Err(ExecError::CCVAmountConflict);
         }
 
@@ -312,7 +335,11 @@ impl<'a> Exec<'a> {
 
         // Accumulate residual into the shared minimum — this is what enables
         // aggregation across multiple inputs targeting the same output.
-        let new_min = tx_state.output_min_amount[index]
+        let new_min = tx_state
+            .output_min_amount
+            .get(index)
+            .copied()
+            .ok_or(ExecError::CCVAmountConflict)?
             .checked_add(residual)
             .ok_or(ExecError::CCVInsufficientAmount)?;
 
@@ -325,8 +352,14 @@ impl<'a> Exec<'a> {
             let mut state = tx_state.borrow_mut();
             // Persist the accumulated minimum so subsequent DEFAULT checks from
             // other inputs build on top of it rather than starting from zero.
-            state.output_min_amount[index] = new_min;
-            state.output_checked_default[index] = true;
+            *state
+                .output_min_amount
+                .get_mut(index)
+                .ok_or(ExecError::CCVAmountConflict)? = new_min;
+            *state
+                .output_checked_default
+                .get_mut(index)
+                .ok_or(ExecError::CCVAmountConflict)? = true;
         }
 
         // Zero the residual — the input's amount is now committed to this output
@@ -363,19 +396,36 @@ impl<'a> Exec<'a> {
         }
 
         // BIP-443: conflict check comes second.
-        if tx_state.output_checked_default[index] || tx_state.output_checked_deduct[index] {
+        if *tx_state
+            .output_checked_default
+            .get(index)
+            .ok_or(ExecError::CCVAmountConflict)?
+            || *tx_state
+                .output_checked_deduct
+                .get(index)
+                .ok_or(ExecError::CCVAmountConflict)?
+        {
             return Err(ExecError::CCVAmountConflict);
         }
 
         drop(tx_state);
         if let Some(tx_state) = self.ccv_tx_state {
             let mut state = tx_state.borrow_mut();
-            state.output_min_amount[index] += amount;
-            state.output_checked_deduct[index] = true;
+            // BIP-443 does not add the output amount to `output_min_amount`
+            // for the deduct semantic. A later DEFAULT check on the same
+            // output fails on `output_checked_deduct`, so `output_min_amount`
+            // is never read again.
+            *state
+                .output_checked_deduct
+                .get_mut(index)
+                .ok_or(ExecError::CCVAmountConflict)? = true;
         }
 
         if let Some(ref mut input_state) = self.ccv_input_state {
-            input_state.residual_input_amount -= amount;
+            input_state.residual_input_amount = input_state
+                .residual_input_amount
+                .checked_sub(amount)
+                .ok_or(ExecError::CCVInsufficientAmount)?;
         }
 
         Ok(())
@@ -383,29 +433,11 @@ impl<'a> Exec<'a> {
 
     // Helper methods
 
-    fn is_minimal_minus_one(&self, bytes: &[u8]) -> bool {
-        // Check if bytes represent minimally encoded -1 (0x81)
-        bytes == [0x81]
-    }
-
-    fn current_input_taptree(&self) -> Result<TapNodeHash, ExecError> {
-        // For tapscript, the leaf hash is computed from the script
-        // In a full implementation, we'd track the taptree from the control block
-        // For now, return a default empty tree hash
-        Ok(TapNodeHash::from_slice(&[0u8; 32]).unwrap())
-    }
-
-    fn current_input_internal_key(&self) -> Result<XOnlyPublicKey, ExecError> {
-        // In a real implementation, this would come from the control block
-        // For testing, we return the NUMS key
-        XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).map_err(|_| ExecError::InvalidCCVPubkey)
-    }
-
-    fn make_p2tr_script(&self, key: &XOnlyPublicKey) -> Result<Vec<u8>, ExecError> {
+    fn make_p2tr_script(key: &XOnlyPublicKey) -> Vec<u8> {
         // Create P2TR scriptPubKey: OP_1 (0x51) + 32-byte key
         let mut script = vec![0x51, 0x20]; // OP_1 + push 32 bytes
         script.extend_from_slice(&key.serialize());
-        Ok(script)
+        script
     }
 }
 
@@ -414,12 +446,11 @@ mod tests {
     use super::*;
     use crate::script_encoding::EncodeSakeScript;
     use crate::witness_carrier::SakeWitnessCarrier;
-    use crate::{Error, validate};
+    use crate::{Error, SakeInput, validate};
     use bitcoin::key::{Keypair, Secp256k1};
     use bitcoin::secp256k1::XOnlyPublicKey;
     use bitcoin::{Amount, ScriptBuf, Transaction, TxOut, consensus::deserialize};
     use bitcoin_script::{define_pushable, script};
-    use hex;
     use serde::Deserialize;
     use std::str::FromStr;
 
@@ -588,7 +619,7 @@ mod tests {
         };
 
         let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .encode_sake_script(&[dummy_oracle_pk()], 1)
             .unwrap();
 
         // ==== SUCCESS CASE ====
@@ -597,7 +628,8 @@ mod tests {
         // We want append_data on top (popped first), old_data below
         let witness_data = vec![append_data.to_vec(), old_data.to_vec()];
 
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, witness_data)]);
+        let witness_carrier =
+            TxOut::sake_witness_carrier(&[(0, witness_data)]).expect("valid SAKE witness carrier");
         let tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -605,7 +637,7 @@ mod tests {
             output: vec![outputs[0].clone(), witness_carrier],
         };
 
-        let result = validate(&tx, &prevouts, &[(0, encoded_script.clone())]);
+        let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script.clone())]);
         assert!(
             result.is_ok(),
             "State transition should succeed: witness old_data validated, new_data computed via OP_CAT: {:?}",
@@ -618,7 +650,8 @@ mod tests {
         let wrong_old_data = b"fake_state_nonce_9999";
         let malicious_witness_data = vec![append_data.to_vec(), wrong_old_data.to_vec()];
 
-        let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(0, malicious_witness_data)]);
+        let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(0, malicious_witness_data)])
+            .expect("valid SAKE witness carrier");
         let malicious_tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -626,7 +659,11 @@ mod tests {
             output: vec![outputs[0].clone(), malicious_witness_carrier],
         };
 
-        let malicious_result = validate(&malicious_tx, &prevouts, &[(0, encoded_script)]);
+        let malicious_result = validate(
+            &malicious_tx,
+            &prevouts,
+            &[SakeInput::new(0, encoded_script)],
+        );
         assert!(
             matches!(
                 malicious_result,
@@ -713,14 +750,15 @@ mod tests {
         };
 
         let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .encode_sake_script(&[dummy_oracle_pk()], 1)
             .unwrap();
 
         // ==== SUCCESS CASE ====
         // Pass data in witness
         let witness_data = vec![new_taptree.to_byte_array().to_vec(), data.to_vec()];
 
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, witness_data)]);
+        let witness_carrier =
+            TxOut::sake_witness_carrier(&[(0, witness_data)]).expect("valid SAKE witness carrier");
         let tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -728,7 +766,7 @@ mod tests {
             output: vec![outputs[0].clone(), witness_carrier],
         };
 
-        let result = validate(&tx, &prevouts, &[(0, encoded_script.clone())]);
+        let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script.clone())]);
         assert!(
             result.is_ok(),
             "State transition should succeed: data persists, taptree upgraded: {:?}",
@@ -746,7 +784,8 @@ mod tests {
         let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(
             0,
             vec![new_taptree.to_byte_array().to_vec(), data.to_vec()],
-        )]);
+        )])
+        .expect("valid SAKE witness carrier");
         let malicious_tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -754,7 +793,11 @@ mod tests {
             output: vec![outputs_wrong_taptree[0].clone(), malicious_witness_carrier],
         };
 
-        let malicious_result = validate(&malicious_tx, &prevouts, &[(0, encoded_script)]);
+        let malicious_result = validate(
+            &malicious_tx,
+            &prevouts,
+            &[SakeInput::new(0, encoded_script)],
+        );
         assert!(
             matches!(
                 malicious_result,
@@ -840,7 +883,7 @@ mod tests {
         };
 
         let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .encode_sake_script(&[dummy_oracle_pk()], 1)
             .unwrap();
 
         // ==== SUCCESS CASE ====
@@ -848,7 +891,8 @@ mod tests {
         // This puts new_data at bottom of stack, prev_accumulator on top (as script expects)
         let witness_data = vec![new_data.clone(), prev_accumulator.clone()];
 
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, witness_data)]);
+        let witness_carrier =
+            TxOut::sake_witness_carrier(&[(0, witness_data)]).expect("valid SAKE witness carrier");
         let tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -856,7 +900,7 @@ mod tests {
             output: vec![outputs[0].clone(), witness_carrier],
         };
 
-        let result = validate(&tx, &prevouts, &[(0, encoded_script.clone())]);
+        let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script.clone())]);
         assert!(
             result.is_ok(),
             "Data availability proof should succeed with correct witness: {:?}",
@@ -867,7 +911,8 @@ mod tests {
         let wrong_prev_accumulator: Vec<u8> = sha256::Hash::hash(b"wrong").to_byte_array().to_vec();
         let malicious_witness = vec![new_data.clone(), wrong_prev_accumulator];
 
-        let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(0, malicious_witness)]);
+        let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(0, malicious_witness)])
+            .expect("valid SAKE witness carrier");
         let malicious_tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -875,7 +920,11 @@ mod tests {
             output: vec![outputs[0].clone(), malicious_witness_carrier],
         };
 
-        let malicious_result = validate(&malicious_tx, &prevouts, &[(0, encoded_script)]);
+        let malicious_result = validate(
+            &malicious_tx,
+            &prevouts,
+            &[SakeInput::new(0, encoded_script)],
+        );
         assert!(
             matches!(
                 malicious_result,
@@ -908,8 +957,33 @@ mod tests {
 
     #[test]
     fn test_ccv_exec_vectors() {
+        use std::collections::BTreeMap;
+
+        use bitcoin::{
+            blockdata::script::Builder,
+            opcodes::all::{OP_PUSHNUM_NEG1, OP_RETURN_187},
+            script::PushBytesBuf,
+        };
+
         use crate::script_encoding::EncodeSakeScript;
 
+        fn push_minimal(builder: Builder, bytes: &[u8]) -> Builder {
+            if bytes.is_empty() {
+                builder.push_int(0)
+            } else if bytes == [0x81] {
+                builder.push_opcode(OP_PUSHNUM_NEG1)
+            } else if bytes.len() == 1 && (1..=16).contains(&bytes[0]) {
+                builder.push_int(bytes[0] as i64)
+            } else {
+                builder.push_slice(PushBytesBuf::try_from(bytes.to_vec()).unwrap())
+            }
+        }
+
+        // CCV vectors: one entry per transaction. `ccv_executions` lists the
+        // OP_CHECKCONTRACTVERIFY parameters pushed for each input, and
+        // `broadcast_error` is Core's expected mempool rejection message. The
+        // test rebuilds each input's script from those parameters instead of
+        // executing the vector's original witness script.
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src/exec/sake_opcodes/op_ccv/exec.json");
         let file = std::fs::read(path).unwrap();
@@ -918,67 +992,114 @@ mod tests {
             serde_json::from_slice(&file).expect("Failed to parse test vectors JSON");
 
         for (i, tv) in vectors.iter().enumerate() {
-            println!("Running test vector {}: txid={}", i, tv.txid);
+            println!("Running test vector {i}: txid={}", tv.txid);
 
             let tx_bytes = hex::decode(&tv.rawtx).expect("Invalid rawtx hex");
-            let tx: Transaction = deserialize(&tx_bytes).expect("Failed to parse rawtx");
+            let mut tx: Transaction = deserialize(&tx_bytes).expect("Failed to parse rawtx");
 
             let mut prevouts = vec![];
             for prevout in &tv.prevouts {
                 let amount = prevout[0].as_u64().expect("Invalid amount");
                 let script_hex = prevout[1].as_str().expect("Invalid script");
                 let script_bytes = hex::decode(script_hex).expect("Invalid script hex");
-                let script = ScriptBuf::from_bytes(script_bytes);
                 prevouts.push(TxOut {
                     value: Amount::from_sat(amount),
-                    script_pubkey: script,
+                    script_pubkey: ScriptBuf::from_bytes(script_bytes),
                 });
             }
 
-            for ccv_exec in &tv.ccv_executions {
-                let input_index = ccv_exec.input_index;
-                assert!(input_index < tx.input.len(), "input_index out of bounds");
+            // Capture the current input's spend information from the vector's
+            // real taproot witness before adding the SAKE carrier.
+            let spend_info = tx
+                .input
+                .first()
+                .and_then(|input| SakeInput::from_witness(0, &input.witness).ok())
+                .and_then(|original| {
+                    original
+                        .control_block
+                        .as_ref()
+                        .map(|cb| crate::current_spend_info(&original.script, cb))
+                });
 
-                let data_bytes = hex::decode(&ccv_exec.data).unwrap_or_default();
-                let index_bytes = hex::decode(&ccv_exec.index).unwrap_or_default();
-                let pk_bytes = hex::decode(&ccv_exec.pk).unwrap_or_default();
-                let taptree_bytes = hex::decode(&ccv_exec.taptree).unwrap_or_default();
-                let flags_bytes = hex::decode(&ccv_exec.flags).unwrap_or_default();
+            let mut by_input: BTreeMap<usize, Vec<&CcvExecution>> = BTreeMap::new();
+            for execution in &tv.ccv_executions {
+                by_input
+                    .entry(execution.input_index)
+                    .or_default()
+                    .push(execution);
+            }
 
-                let mode: i64 = if flags_bytes.is_empty() {
-                    -1
-                } else {
-                    flags_bytes.first().copied().unwrap_or(0xFF) as i64
-                };
+            let mut inputs = vec![];
+            let mut carrier = vec![];
+            for (input_index, executions) in by_input {
+                let mut builder = ScriptBuf::builder();
+                for execution in executions {
+                    let data = hex::decode(&execution.data).unwrap_or_default();
+                    let index = hex::decode(&execution.index).unwrap_or_default();
+                    let pk = hex::decode(&execution.pk).unwrap_or_default();
+                    let taptree = hex::decode(&execution.taptree).unwrap_or_default();
+                    let flags = hex::decode(&execution.flags).unwrap_or_default();
+                    // Empty flags is the default mode, CHECK_OUTPUT (0).
+                    let mode: i64 = if flags.is_empty() {
+                        0
+                    } else {
+                        bitcoin::script::read_scriptint(&flags).expect("Invalid CCV mode")
+                    };
 
-                let ccv_script = script! {
-                    <data_bytes.clone()>
-                    <index_bytes.clone()>
-                    <pk_bytes.clone()>
-                    <taptree_bytes.clone()>
-                    <mode>
-                    OP_CHECKCONTRACTVERIFY
-                };
-
-                let encoded_script = ccv_script
-                    .encode_sake_script(&[dummy_oracle_pk()], 0)
+                    builder = push_minimal(builder, &data);
+                    builder = push_minimal(builder, &index);
+                    builder = push_minimal(builder, &pk);
+                    builder = push_minimal(builder, &taptree);
+                    builder = builder.push_int(mode).push_opcode(OP_RETURN_187);
+                }
+                builder = builder.push_int(1);
+                let emulated = builder.into_script();
+                let encoded = emulated
+                    .encode_sake_script(&[dummy_oracle_pk()], 1)
                     .expect("Failed to encode SAKE script");
 
-                let mut tx = tx.clone();
-                let witness_carrier = TxOut::sake_witness_carrier(&[(input_index, vec![])]);
-                tx.output.push(witness_carrier);
-
-                let result = validate(&tx, &prevouts, &[(input_index, encoded_script)]);
-
-                if tv.broadcast_error.is_some() {
-                    assert!(
-                        result.is_err(),
-                        "Test vector {} expected error but got success: {:?}",
-                        i,
-                        result
-                    );
-                }
+                let mut input = SakeInput::new(input_index, encoded);
+                input.spend_info = spend_info;
+                inputs.push(input);
+                carrier.push((input_index, vec![]));
             }
+
+            tx.output
+                .push(TxOut::sake_witness_carrier(&carrier).expect("valid SAKE witness carrier"));
+            let result = validate(&tx, &prevouts, &inputs);
+
+            match tv.broadcast_error.as_deref() {
+                None => assert!(
+                    result.is_ok(),
+                    "Test vector {i} expected success but got {result:?}"
+                ),
+                Some(expected) => assert_expected_ccv_error(i, expected, result),
+            }
+        }
+
+        /// The vector's error strings are Core's mempool messages. Map them to
+        /// the CCV error class so a vector cannot pass for an unrelated reason.
+        fn assert_expected_ccv_error(i: usize, expected: &str, result: Result<(), Error>) {
+            let Err(Error::Exec(err)) = result else {
+                panic!("vector {i} expected {expected:?}, got {result:?}");
+            };
+            let matched = if err == ExecError::CCVScriptMismatch {
+                expected.contains("Mismatching contract data or program")
+            } else if err == ExecError::CCVInsufficientAmount || err == ExecError::CCVAmountConflict
+            {
+                expected.contains("Incorrect amount")
+            } else if err == ExecError::InvalidCCVIndex
+                || err == ExecError::InvalidCCVTaptree
+                || err == ExecError::InvalidCCVPubkey
+            {
+                expected.contains("Invalid arguments")
+            } else {
+                false
+            };
+            assert!(
+                matched,
+                "vector {i} failed with {err:?}, which does not match {expected:?}"
+            );
         }
     }
 
@@ -1023,10 +1144,11 @@ mod tests {
 
             // Encode the script and witness
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1034,7 +1156,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "CCVMode::CheckOutput should succeed with matching output: {:?}",
@@ -1074,10 +1196,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1085,7 +1208,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
                 "Should fail with insufficient amount: {:?}",
@@ -1126,10 +1249,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1137,7 +1261,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "CCVMode::CheckOutput_IGNORE_AMOUNT should succeed regardless of amount: {:?}",
@@ -1193,10 +1317,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1204,7 +1329,7 @@ mod tests {
                 output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "Deduct + Default mode should work for splitting: {:?}",
@@ -1242,10 +1367,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1253,7 +1379,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
                 "Should fail when deducting more than available: {:?}",
@@ -1293,10 +1419,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1304,7 +1431,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "CCVMode::CheckInput should succeed: {:?}",
@@ -1325,8 +1452,9 @@ mod tests {
             let script = script! {
                 <vec![0x01u8; 32]>  // <data>
                 OP_0                // <index=0>
-                <vec![0x02u8; 32]>  // <pk>
-                // Missing <taptree> and <mode>
+                OP_0                // <pk=empty>
+                OP_0                // <mode=0>
+                // Missing <taptree>; only 4 elements
                 OP_CHECKCONTRACTVERIFY
             };
 
@@ -1361,10 +1489,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1372,7 +1501,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(result.is_ok(), "Empty pk should use NUMS key: {:?}", result);
         }
 
@@ -1403,10 +1532,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1414,7 +1544,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "Data tweak should be applied correctly: {:?}",
@@ -1451,10 +1581,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1462,7 +1593,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVScriptMismatch))),
                 "Should fail with script mismatch: {:?}",
@@ -1498,10 +1629,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1509,7 +1641,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "Undefined mode should succeed for soft fork safety: {:?}",
@@ -1542,10 +1674,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1553,7 +1686,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::InvalidCCVIndex))),
                 "Should fail with invalid index: {:?}",
@@ -1586,10 +1719,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1597,7 +1731,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::InvalidCCVIndex))),
                 "Should fail with invalid index: {:?}",
@@ -1650,10 +1784,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1661,7 +1796,7 @@ mod tests {
                 output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
                 "Should fail with amount conflict for DEDUCT then DEFAULT: {:?}",
@@ -1711,7 +1846,8 @@ mod tests {
             // Output 0: 300 sats — satisfies input 0's DEFAULT (300 >= 300) and has a value
             // small enough that input 1's residual (500) passes the residual check.
             let output = create_p2tr_output(internal_key, None, 300);
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])])
+                .expect("valid SAKE witness carrier");
 
             // Input 0 script: DEFAULT on output 0
             let script_input_0 = {
@@ -1724,7 +1860,7 @@ mod tests {
                     OP_CHECKCONTRACTVERIFY
                     OP_1
                 };
-                s.encode_sake_script(&[dummy_oracle_pk()], 0).unwrap()
+                s.encode_sake_script(&[dummy_oracle_pk()], 1).unwrap()
             };
 
             // Input 1 script: DEDUCT on output 0 — should fail with CCVAmountConflict
@@ -1749,7 +1885,14 @@ mod tests {
                 output: vec![output, witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, script_input_0), (1, script_input_1)]);
+            let result = validate(
+                &tx,
+                &prevouts,
+                &[
+                    SakeInput::new(0, script_input_0),
+                    SakeInput::new(1, script_input_1),
+                ],
+            );
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
                 "Should fail with amount conflict when input 1 tries DEDUCT after input 0 used DEFAULT on same output: {:?}",
@@ -1800,10 +1943,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1811,7 +1955,7 @@ mod tests {
                 output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
                 "Should fail with amount conflict for double DEDUCT: {:?}",
@@ -1876,10 +2020,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1887,7 +2032,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
                 "Spec checks residual before conflict flags; expected CCVInsufficientAmount, got: {:?}",
@@ -1929,7 +2074,7 @@ mod tests {
                 },
             ];
 
-            let ccv_script_for = |input_idx: usize| {
+            let ccv_script_for = |_input_idx: usize| {
                 let s = script! {
                     OP_0                              // <data=empty>
                     OP_0                              // <index=0>
@@ -1939,13 +2084,13 @@ mod tests {
                     OP_CHECKCONTRACTVERIFY
                     OP_1
                 };
-                s.encode_sake_script(&[dummy_oracle_pk()], input_idx)
-                    .unwrap()
+                s.encode_sake_script(&[dummy_oracle_pk()], 1).unwrap()
             };
 
             let make_tx = |output_amount: u64| {
                 let output = create_p2tr_output(internal_key, None, output_amount);
-                let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
+                let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])])
+                    .expect("valid SAKE witness carrier");
                 Transaction {
                     version: bitcoin::transaction::Version::TWO,
                     lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1954,7 +2099,10 @@ mod tests {
                 }
             };
 
-            let scripts = [(0, ccv_script_for(0)), (1, ccv_script_for(1))];
+            let scripts = [
+                SakeInput::new(0, ccv_script_for(0)),
+                SakeInput::new(1, ccv_script_for(1)),
+            ];
 
             // Success: output holds exactly the aggregated 1000 sats
             let result = validate(&make_tx(1000), &prevouts, &scripts);
@@ -2005,10 +2153,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -2016,7 +2165,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::InvalidCCVIndex))),
                 "index=-2 should fail with InvalidCCVIndex: {:?}",
@@ -2081,10 +2230,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -2097,7 +2247,7 @@ mod tests {
                 ],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "DEDUCT on output 0, DEDUCT on output 1, DEFAULT on output 2 should all succeed independently: {:?}",
@@ -2163,10 +2313,11 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -2179,7 +2330,7 @@ mod tests {
                 ],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
                 "Third DEDUCT should fail after residual is depleted below output amount: {:?}",
@@ -2214,7 +2365,8 @@ mod tests {
             ];
 
             let output = create_p2tr_output(internal_key, None, 300);
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])])
+                .expect("valid SAKE witness carrier");
 
             let script_input_0 = {
                 let s = script! {
@@ -2222,7 +2374,7 @@ mod tests {
                     OP_CHECKCONTRACTVERIFY
                     OP_1
                 };
-                s.encode_sake_script(&[dummy_oracle_pk()], 0).unwrap()
+                s.encode_sake_script(&[dummy_oracle_pk()], 1).unwrap()
             };
 
             // Input 1 has residual=100, output 0 has value=300:
@@ -2243,7 +2395,14 @@ mod tests {
                 output: vec![output, witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, script_input_0), (1, script_input_1)]);
+            let result = validate(
+                &tx,
+                &prevouts,
+                &[
+                    SakeInput::new(0, script_input_0),
+                    SakeInput::new(1, script_input_1),
+                ],
+            );
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
                 "Residual check fires before conflict check even when both conditions are true: {:?}",
