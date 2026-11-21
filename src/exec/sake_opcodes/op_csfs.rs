@@ -118,8 +118,9 @@ mod tests {
 
     #[test]
     fn test_op_csfs_arbitrary_message_lengths() {
-        // BIP-340 test vectors with 0, 1, 17 and 100 byte messages. BIP-348
-        // verifies the raw message, so all of these must succeed.
+        // BIP-348 has no dedicated vector file. These are the official BIP-340
+        // test vectors for 0, 1, 17 and 100 byte messages; BIP-348 verifies the
+        // raw message, so all of these must succeed.
         use bitcoin::XOnlyPublicKey;
 
         let pk = XOnlyPublicKey::from_str(

@@ -393,17 +393,10 @@ impl<'a> Exec<'a> {
         drop(tx_state);
         if let Some(tx_state) = self.ccv_tx_state {
             let mut state = tx_state.borrow_mut();
-            let new_min = state
-                .output_min_amount
-                .get(index)
-                .copied()
-                .ok_or(ExecError::CCVAmountConflict)?
-                .checked_add(amount)
-                .ok_or(ExecError::CCVInsufficientAmount)?;
-            *state
-                .output_min_amount
-                .get_mut(index)
-                .ok_or(ExecError::CCVAmountConflict)? = new_min;
+            // BIP-443 does not add the output amount to `output_min_amount`
+            // for the deduct semantic. A later DEFAULT check on the same
+            // output fails on `output_checked_deduct`, so `output_min_amount`
+            // is never read again.
             *state
                 .output_checked_deduct
                 .get_mut(index)
@@ -965,6 +958,11 @@ mod tests {
             }
         }
 
+        // CCV vectors: one entry per transaction. `ccv_executions` lists the
+        // OP_CHECKCONTRACTVERIFY parameters pushed for each input, and
+        // `broadcast_error` is Core's expected mempool rejection message. The
+        // test rebuilds each input's script from those parameters instead of
+        // executing the vector's original witness script.
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src/exec/sake_opcodes/op_ccv/exec.json");
         let file = std::fs::read(path).unwrap();
@@ -1039,29 +1037,47 @@ mod tests {
                     .encode_sake_script(&[dummy_oracle_pk()], 1)
                     .expect("Failed to encode SAKE script");
 
-                inputs.push(SakeInput {
-                    input_index,
-                    script: encoded,
-                    control_block: None,
-                    spend_info,
-                });
+                let mut input = SakeInput::new(input_index, encoded);
+                input.spend_info = spend_info;
+                inputs.push(input);
                 carrier.push((input_index, vec![]));
             }
 
             tx.output.push(TxOut::sake_witness_carrier(&carrier));
             let result = validate(&tx, &prevouts, &inputs);
 
-            if tv.broadcast_error.is_some() {
-                assert!(
-                    result.is_err(),
-                    "Test vector {i} expected error but got success: {result:?}"
-                );
-            } else {
-                assert!(
+            match tv.broadcast_error.as_deref() {
+                None => assert!(
                     result.is_ok(),
                     "Test vector {i} expected success but got {result:?}"
-                );
+                ),
+                Some(expected) => assert_expected_ccv_error(i, expected, result),
             }
+        }
+
+        /// The vector's error strings are Core's mempool messages. Map them to
+        /// the CCV error class so a vector cannot pass for an unrelated reason.
+        fn assert_expected_ccv_error(i: usize, expected: &str, result: Result<(), Error>) {
+            let Err(Error::Exec(err)) = result else {
+                panic!("vector {i} expected {expected:?}, got {result:?}");
+            };
+            let matched = if err == ExecError::CCVScriptMismatch {
+                expected.contains("Mismatching contract data or program")
+            } else if err == ExecError::CCVInsufficientAmount || err == ExecError::CCVAmountConflict
+            {
+                expected.contains("Incorrect amount")
+            } else if err == ExecError::InvalidCCVIndex
+                || err == ExecError::InvalidCCVTaptree
+                || err == ExecError::InvalidCCVPubkey
+            {
+                expected.contains("Invalid arguments")
+            } else {
+                false
+            };
+            assert!(
+                matched,
+                "vector {i} failed with {err:?}, which does not match {expected:?}"
+            );
         }
     }
 

@@ -63,24 +63,27 @@ pub use exec::op_th::{OP_TEMPLATEHASH, OP_TH};
 
 /// One input to validate.
 ///
-/// Only inputs whose `script` contains a SAKE encoding are validated and
-/// signed. Other inputs are ignored: an oracle cannot attest to arbitrary
-/// native tapscript execution without full chain state.
+/// Only inputs whose script contains a SAKE encoding are validated and signed.
+/// Other inputs are ignored: an oracle cannot attest to arbitrary native
+/// tapscript execution without full chain state.
+///
+/// Build it with [`SakeInput::from_witness`]. That is the only public
+/// constructor: it rejects an annex in the witness and extracts the control
+/// block, so an input cannot be built without the data that [`validate`] needs
+/// to prove the tapscript commitment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SakeInput {
     /// Index of this input in the transaction.
-    pub input_index: usize,
+    input_index: usize,
     /// The full tapscript for this input.
-    pub script: ScriptBuf,
-    /// Control block proving `script` against the spent output. When present,
-    /// [`validate`] checks the taproot commitment and derives the current
-    /// input's internal key and taptree for `OP_CHECKCONTRACTVERIFY`'s `-1`
-    /// values.
+    script: ScriptBuf,
+    /// Control block proving `script` against the spent output. [`validate`]
+    /// checks the taproot commitment and derives the current input's internal
+    /// key and taptree for `OP_CHECKCONTRACTVERIFY`'s `-1` values.
     ///
-    /// Oracles should require this for production signing. Without it the
-    /// library cannot prove that `script` is committed by the prevout, even
-    /// though the returned signature is still bound to the leaf hash.
-    pub control_block: Option<ControlBlock>,
+    /// [`SakeInput::from_witness`] always sets this. It is `None` only for
+    /// inputs built by the crate's own tests.
+    control_block: Option<ControlBlock>,
     /// Test-only override for the current input's internal key and taptree
     /// Merkle root, used by `OP_CHECKCONTRACTVERIFY`'s `-1` values. This field
     /// is not part of the public API; production derives the spend info from
@@ -90,43 +93,11 @@ pub struct SakeInput {
 }
 
 impl SakeInput {
-    /// Builds an input from an explicit script.
-    pub fn new(input_index: usize, script: ScriptBuf) -> Self {
-        Self::new_inner(input_index, script, None)
-    }
-
-    #[cfg(not(test))]
-    fn new_inner(
-        input_index: usize,
-        script: ScriptBuf,
-        control_block: Option<ControlBlock>,
-    ) -> Self {
-        Self {
-            input_index,
-            script,
-            control_block,
-        }
-    }
-
-    #[cfg(test)]
-    fn new_inner(
-        input_index: usize,
-        script: ScriptBuf,
-        control_block: Option<ControlBlock>,
-    ) -> Self {
-        Self {
-            input_index,
-            script,
-            control_block,
-            spend_info: None,
-        }
-    }
-
     /// Builds an input from a full taproot witness: `[stack..., script, control_block]`.
     ///
     /// The initial stack is not needed for SAKE inputs (the emulation stack is
     /// read from the witness carrier). An annex (last element starting with
-    /// `0x50`) is rejected.
+    /// `0x50`) is rejected, and the control block must decode.
     pub fn from_witness(input_index: usize, witness: &Witness) -> Result<Self, Error> {
         let elements: Vec<&[u8]> = witness.iter().collect();
         if elements.len() >= 2
@@ -148,11 +119,54 @@ impl SakeInput {
             .get(script_index + 1)
             .ok_or(Error::InvalidWitness { input: input_index })?;
         let control_block = ControlBlock::decode(control_block).map_err(Error::ControlBlock)?;
-        Ok(Self::new_inner(
+        Ok(Self {
             input_index,
-            ScriptBuf::from_bytes(script.to_vec()),
-            Some(control_block),
-        ))
+            script: ScriptBuf::from_bytes(script.to_vec()),
+            control_block: Some(control_block),
+            #[cfg(test)]
+            spend_info: None,
+        })
+    }
+
+    /// The index of this input in the transaction.
+    pub fn input_index(&self) -> usize {
+        self.input_index
+    }
+
+    /// The full tapscript for this input.
+    pub fn script(&self) -> &Script {
+        &self.script
+    }
+
+    /// The control block that proves `script` against the spent output.
+    pub fn control_block(&self) -> Option<&ControlBlock> {
+        self.control_block.as_ref()
+    }
+
+    /// Builds a test input without a control block.
+    #[cfg(test)]
+    pub(crate) fn new(input_index: usize, script: ScriptBuf) -> Self {
+        Self {
+            input_index,
+            script,
+            control_block: None,
+            spend_info: None,
+        }
+    }
+
+    /// Builds a test input with a control block.
+    #[cfg(test)]
+    pub(crate) fn new_with_control_block(
+        input_index: usize,
+        script: ScriptBuf,
+        control_block: ControlBlock,
+    ) -> Self {
+        Self {
+            input_index,
+            script,
+            control_block: Some(control_block),
+            spend_info: None,
+        }
     }
 }
 
@@ -778,12 +792,7 @@ mod tests {
         };
         tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
 
-        let input = SakeInput {
-            input_index: 0,
-            script: encoded.clone(),
-            control_block: Some(control_block.clone()),
-            spend_info: None,
-        };
+        let input = SakeInput::new_with_control_block(0, encoded.clone(), control_block.clone());
         assert!(
             validate(
                 &tx,
@@ -793,24 +802,25 @@ mod tests {
             .is_ok()
         );
 
-        let tampered = SakeInput {
-            input_index: 0,
-            script: script! { OP_0 }.encode_sake_script(&[pk], 1).unwrap(),
-            control_block: Some(control_block.clone()),
-            spend_info: None,
-        };
+        let tampered = SakeInput::new_with_control_block(
+            0,
+            script! { OP_0 }.encode_sake_script(&[pk], 1).unwrap(),
+            control_block.clone(),
+        );
         assert!(matches!(
-            validate(&tx, &[prevout], &[tampered]),
+            validate(&tx, std::slice::from_ref(&prevout), &[tampered]),
             Err(Error::ControlBlockMismatch { .. })
         ));
 
-        // from_witness round-trip
+        // The production constructor: from_witness -> validate.
         let mut witness = Witness::new();
         witness.push(encoded.as_bytes());
         witness.push(control_block.serialize());
         let parsed = SakeInput::from_witness(0, &witness).unwrap();
-        assert_eq!(parsed.script, encoded);
-        assert_eq!(parsed.control_block, Some(control_block));
+        assert_eq!(parsed.input_index(), 0);
+        assert_eq!(parsed.script(), encoded.as_script());
+        assert_eq!(parsed.control_block(), Some(&control_block));
+        assert!(validate(&tx, &[prevout], &[parsed]).is_ok());
     }
 
     #[test]
@@ -853,12 +863,7 @@ mod tests {
         };
         tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
 
-        let input = SakeInput {
-            input_index: 0,
-            script: encoded,
-            control_block: Some(control_block),
-            spend_info: None,
-        };
+        let input = SakeInput::new_with_control_block(0, encoded, control_block);
         assert!(validate(&tx, &[prevout], &[input]).is_ok());
     }
 

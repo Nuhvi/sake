@@ -53,8 +53,8 @@ User constructs transaction:
  - Last Output: Witness Carrier (OP_RETURN with emulation witness)
 
 #### Step 3: Send to Oracles
-The user sends the transaction, the prevouts, and each SAKE input's tapscript
-and control block to each oracle.
+The user sends the transaction, the prevouts, and for each SAKE input the last
+two elements of its taproot witness: the tapscript and the control block.
   - The transaction has empty input witnesses; the emulation stack is in the witness carrier
   - The oracle verifies each control block against its prevout
   - No coordination between oracles needed
@@ -63,11 +63,12 @@ and control block to each oracle.
 #### Step 4: Oracle Validation (Independent & Parallel)
 Each oracle:
 1. Parses the witness carrier from the last output
-2. Extracts the SAKE encoding from each supplied tapscript
-3. Verifies each supplied control block against the prevout (oracles should require it)
-4. Removes the witness carrier from the transaction used for emulation
-5. Runs the emulation engine with the carrier's witness stacks
-6. If valid → signs the taproot script-spend sighash | If invalid → rejects
+2. Builds each input with `SakeInput::from_witness` from `[tapscript, control_block]`
+3. Verifies each control block against the prevout
+4. Extracts the SAKE encoding from each supplied tapscript
+5. Removes the witness carrier from the transaction used for emulation
+6. Runs the emulation engine with the carrier's witness stacks
+7. If valid → signs the taproot script-spend sighash | If invalid → rejects
 
 Non-SAKE inputs are not validated and are not signed. The oracle only
 attests to inputs that contain a SAKE encoding.
@@ -201,17 +202,21 @@ tx.output.push(witness_carrier);
 ### For Oracles
 
 ```rust
+use bitcoin::Witness;
 use sake::{SakeInput, validate_and_sign};
 
-// One entry per SAKE input. `script` is the full tapscript and
-// `control_block` proves it against the prevout.
-let mut input = SakeInput::new(0, taproot_script);
-input.control_block = Some(control_block);
-let inputs = vec![input];
+// `from_witness` is the only public constructor. It takes the taproot witness
+// with the script and control block as the last two elements. It rejects an
+// annex and extracts the control block, so `validate` can check the commitment.
+let witness = Witness::from_slice(&[
+    taproot_script.to_vec(),
+    control_block.serialize(),
+]);
+let input = SakeInput::from_witness(0, &witness)?;
 
 // Only inputs with a SAKE encoding are validated and signed.
 // Returns (input_index, script-spend SIGHASH_DEFAULT signature) pairs.
-let signatures = validate_and_sign(keypair, &tx, &prevouts, &inputs)?;
+let signatures = validate_and_sign(keypair, &tx, &prevouts, &[input])?;
 ```
 
 ## Complete Example
@@ -225,6 +230,7 @@ Here's a complete example showing a covenant that requires:
 ```rust
 use sake::{EncodeSakeScript, SakeWitnessCarrier};
 use sake::{OP_AMOUNT_CURRENT_INPUT_SELECTOR, op_amount_input_selector, op_amount_output_selector};
+use bitcoin::Witness;
 use bitcoin_script::{define_pushable, script};
 
 define_pushable!();
@@ -304,8 +310,12 @@ spending_tx.output.push(
 );
 
 // Step 5: Send to oracles for validation
-let mut sake_input = sake::SakeInput::new(0, taproot_script.clone());
-sake_input.control_block = Some(control_block.clone());
+// The input is built from the taproot witness: [stack..., script, control_block].
+let sake_witness = Witness::from_slice(&[
+    taproot_script.to_vec(),
+    control_block.serialize(),
+]);
+let sake_input = sake::SakeInput::from_witness(0, &sake_witness)?;
 let signatures = sake::validate_and_sign(keypair, &spending_tx, &prevouts, &[sake_input])?;
 // Each oracle returns (input_index, SIGHASH_DEFAULT script-spend signature) pairs.
 
@@ -364,11 +374,12 @@ real transaction, including the carrier output.
 
 ### Oracle Responsibilities
 
-1. Receive the transaction, prevouts, and each SAKE input's tapscript + control block
+1. Receive the transaction, prevouts, and each SAKE input's taproot witness
+   (`[stack..., tapscript, control_block]`)
 2. Parse the witness carrier from the last output
-3. Verify each supplied control block against its prevout. Oracles should
-   require the control block: without it the library cannot prove that the
-   script is committed by the prevout.
+3. Build each input with `SakeInput::from_witness` and verify its control block
+   against the prevout. The constructor rejects an annex and always extracts
+   the control block, so validation always checks the taproot commitment.
 4. Extract the SAKE encoding from the tapscript
 5. Run the emulation engine with the carrier's witness stack
 6. If emulation succeeds, sign the tapscript script-spend sighash (`SIGHASH_DEFAULT`)
@@ -499,7 +510,7 @@ SAKE operates within specific constraints to maintain compatibility and security
 
 - **Taproot only**: Only works with P2TR outputs
 - **Minimal encoding**: All emulated script instructions and numbers must be minimally encoded
-- **No Annex**: Annex-bearing witnesses are rejected
+- **No Annex**: `SakeInput::from_witness` rejects annex-bearing witnesses. An annex added to the final spend invalidates the oracle signature.
 - **No OP_CODESEPARATOR**: Rejected by the emulator
 - **SAKE inputs only**: The oracle validates and signs inputs that contain a SAKE encoding. Native tapscripts are not validated.
 - **Script size**: Version-0 encodings fit a single push (up to 515 script bytes). Larger scripts use version-1 chunked encoding; every push is at most 520 bytes and the total is bounded by the block weight.

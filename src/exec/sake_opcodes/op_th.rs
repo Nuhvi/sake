@@ -137,8 +137,10 @@ mod tests {
 
     #[test]
     fn test_op_templatehash_basic() {
+        // Local copy of the BIP 446 test vectors:
+        // https://github.com/bitcoin/bips/blob/master/bip-0446/basics.json
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/exec/sake_opcodes/op_th/basic.json");
+            .join("src/exec/sake_opcodes/op_th/basics.json");
         let file = std::fs::read(path).unwrap();
 
         let vectors: Vec<TestVector> =
@@ -174,7 +176,14 @@ mod tests {
                 }
             };
 
-            let basic_script = ScriptBuf::from_bytes(witness.to_vec().first().cloned().unwrap());
+            // The taproot witness is [stack..., script, control_block]. The
+            // basic vectors have no initial stack elements, but read the
+            // script position correctly anyway.
+            let elements = witness.to_vec();
+            assert!(elements.len() >= 2, "vector {i} is not a script-path spend");
+            let script_index = elements.len() - 2;
+            let basic_script = ScriptBuf::from_bytes(elements[script_index].clone());
+            let witness_stack = elements[..script_index].to_vec();
 
             let mut sighashcache = SighashCache::new(tx);
 
@@ -182,10 +191,8 @@ mod tests {
                 &mut sighashcache,
                 &prevouts,
                 tv.input_index,
-                // The basic script
                 &basic_script,
-                // no witness in basic scripts
-                vec![],
+                witness_stack,
             )
             .unwrap();
 
@@ -229,6 +236,10 @@ mod tests {
 
     #[test]
     fn test_op_templatehash_script_assets() {
+        // Local copy of the BIP 446 test vectors:
+        // https://github.com/bitcoin/bips/blob/master/bip-0446/script_assets_test.json
+        // The upstream file has a trailing comma that makes it invalid JSON;
+        // this copy removes it so serde_json accepts the file.
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src/exec/sake_opcodes/op_th/script_assets_test.json");
         let file = std::fs::read(path).unwrap();
@@ -276,11 +287,11 @@ mod tests {
                     }
                 };
 
-                // For some reason these test vectors don't have control block
+                // The script is the penultimate witness element for P2TR
+                // script-path spends and the last element for segwit v0.
                 let script_index = if prevouts[tv.input_index].script_pubkey.is_p2tr() {
                     witness.len().saturating_sub(2)
                 } else {
-                    // segwit
                     witness.len().saturating_sub(1)
                 };
 
@@ -306,9 +317,14 @@ mod tests {
                         Ok(_) => continue,
                         Err(err) => {
                             if tv.comment == "discouraged_template/emptystack" {
-                                // returns an empty stack
+                                // These vectors are marked valid only without
+                                // the TEMPLATEHASH flag, where the opcode is
+                                // OP_SUCCESS. SAKE always enables the opcode, so
+                                // the emulated script leaves a failing stack.
                                 assert_eq!(err, ExecError::NoMoreInstructions { success: false });
                             } else if script.is_empty() && witness.is_empty() {
+                                // No script and no stack leaves an empty stack,
+                                // which fails the cleanstack rule.
                                 assert_eq!(err, ExecError::NoMoreInstructions { success: false });
                             } else {
                                 assert_eq!(err, ExecError::NoMoreInstructions { success: true });
@@ -335,11 +351,11 @@ mod tests {
                     }
                 };
 
-                // For some reason these test vectors don't have control block
+                // The script is the penultimate witness element for P2TR
+                // script-path spends and the last element for segwit v0.
                 let script_index = if prevouts[tv.input_index].script_pubkey.is_p2tr() {
                     witness.len().saturating_sub(2)
                 } else {
-                    // segwit
                     witness.len().saturating_sub(1)
                 };
 

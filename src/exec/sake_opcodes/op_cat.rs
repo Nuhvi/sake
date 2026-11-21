@@ -110,4 +110,39 @@ mod tests {
             Err(Error::Exec(ExecError::InvalidStackOperation))
         ))
     }
+
+    #[test]
+    fn test_bip347_inline_vectors() {
+        // The three TAPSCRIPT vectors from BIP 347:
+        // https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki#test-vectors
+        // The full script-test suite is in the BIP's reference implementation PR.
+
+        // 1. CAT EQUAL: witness stack ["78a11a1260c1101260", "78a11a1260", "c1101260"].
+        validate_single_script(
+            script! { OP_CAT OP_EQUAL },
+            vec![
+                hex::decode("78a11a1260c1101260").unwrap(),
+                hex::decode("78a11a1260").unwrap(),
+                hex::decode("c1101260").unwrap(),
+            ],
+        )
+        .expect("BIP 347 vector 1");
+
+        // 2. CAT inside a true IF branch.
+        validate_single_script(
+            script! { OP_IF OP_CAT OP_ELSE OP_DROP OP_ENDIF },
+            vec![vec![0x51], vec![0xbb, 0xbb], vec![0x01]],
+        )
+        .expect("BIP 347 vector 2");
+
+        // 3. CAT with one empty operand.
+        validate_single_script(
+            script! { OP_CAT },
+            vec![
+                vec![],
+                hex::decode("09ca7009ca7009ca7009ca7009ca70").unwrap(),
+            ],
+        )
+        .expect("BIP 347 vector 3");
+    }
 }
