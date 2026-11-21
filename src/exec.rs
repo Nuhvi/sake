@@ -1,12 +1,13 @@
 use bitcoin::secp256k1;
 use core::cmp;
 
+use bitcoin::XOnlyPublicKey;
 use bitcoin::blockdata::witness::Witness;
 use bitcoin::hashes::{Hash, hash160, ripemd160, sha1, sha256, sha256d};
 use bitcoin::opcodes::{Opcode, all::*};
 use bitcoin::script::{self, Instruction, Script};
 use bitcoin::sighash::SighashCache;
-use bitcoin::taproot::{self, TapLeafHash};
+use bitcoin::taproot::{self, TapLeafHash, TapNodeHash};
 use bitcoin::transaction::{Transaction, TxOut};
 
 pub use crate::error::{Error, ExecError};
@@ -61,6 +62,10 @@ pub struct Exec<'a> {
     pub(crate) ccv_input_state: Option<op_ccv::CCVInputState>,
     /// Reference to CCV transaction-wide state (shared across all inputs)
     pub(crate) ccv_tx_state: Option<&'a std::cell::RefCell<op_ccv::CCVTxState>>,
+    /// Current input internal key, used by CCV's `pk = -1`.
+    current_input_internal_key: Option<XOnlyPublicKey>,
+    /// Current input taptree Merkle root, used by CCV's `taptree = -1`.
+    current_input_taptree: Option<TapNodeHash>,
 }
 
 impl<'a> Exec<'a> {
@@ -104,11 +109,15 @@ impl<'a> Exec<'a> {
 
             ccv_input_state: None,
             ccv_tx_state: None,
+
+            current_input_internal_key: None,
+            current_input_taptree: None,
         })
     }
 
-    /// Create a new Exec instance with CCV transaction state.
-    /// This initializes the per-input state and sets up the shared transaction state.
+    /// Create a new Exec instance with CCV transaction state and the current
+    /// input's taproot spend information (for `pk = -1` / `taptree = -1`).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_ccv(
         sighashcache: &'a mut SighashCache<Transaction>,
         prevouts: &'a [TxOut],
@@ -116,8 +125,9 @@ impl<'a> Exec<'a> {
         script: &'a Script,
         script_witness: Vec<Vec<u8>>,
         ccv_tx_state: &'a std::cell::RefCell<op_ccv::CCVTxState>,
+        current_input_internal_key: Option<XOnlyPublicKey>,
+        current_input_taptree: Option<TapNodeHash>,
     ) -> Result<Exec<'a>, Error> {
-        // Start with the basic initialization
         let mut exec = Self::new(sighashcache, prevouts, input_idx, script, script_witness)?;
 
         // Initialize per-input CCV state (BIP-443 section "Input initialization")
@@ -126,9 +136,9 @@ impl<'a> Exec<'a> {
             .map(|txout| txout.value.to_sat())
             .unwrap_or(0);
         exec.ccv_input_state = Some(op_ccv::CCVInputState::new(input_amount));
-
-        // Store reference to shared transaction state
         exec.ccv_tx_state = Some(ccv_tx_state);
+        exec.current_input_internal_key = current_input_internal_key;
+        exec.current_input_taptree = current_input_taptree;
 
         Ok(exec)
     }
@@ -226,7 +236,8 @@ impl<'a> Exec<'a> {
                 self.stack.pushnum((n as i64) - 1);
             }
 
-            // OP_CTLV and OP_CSV are noop
+            // OP_CLTV and OP_CSV are NOPs in SAKE emulation; they must be
+            // enforced by the native script.
             OP_NOP | OP_NOP1 | OP_CLTV | OP_CSV | OP_NOP6 | OP_NOP7 | OP_NOP8 | OP_NOP9
             | OP_NOP10 => {
                 // nops
@@ -609,6 +620,16 @@ impl<'a> Exec<'a> {
 
         Ok(())
     }
+
+    fn current_input_taptree(&self) -> Result<TapNodeHash, ExecError> {
+        self.current_input_taptree
+            .ok_or(ExecError::MissingCurrentInputSpendInfo)
+    }
+
+    fn current_input_internal_key(&self) -> Result<XOnlyPublicKey, ExecError> {
+        self.current_input_internal_key
+            .ok_or(ExecError::MissingCurrentInputSpendInfo)
+    }
 }
 
 /// Decodes an integer in script format with flexible size limit.
@@ -661,7 +682,8 @@ fn scriptint_parse(v: &[u8]) -> i64 {
         .fold((0, 0), |(acc, sh), n| (acc + ((*n as i64) << sh), sh + 8));
 
     if v.last().copied().unwrap_or_default() & 0x80 != 0 {
-        ret &= (1 << (sh - 1)) - 1;
+        let mask = ((1u64 << (sh - 1)) - 1) as i64;
+        ret &= mask;
         ret = -ret;
     }
     ret

@@ -61,14 +61,18 @@ fn calculate_template_hash(
     {
         let mut enc_sequences = sha256::Hash::engine();
         for txin in tx.input.iter() {
-            txin.sequence.consensus_encode(&mut enc_sequences).unwrap();
+            txin.sequence
+                .consensus_encode(&mut enc_sequences)
+                .expect("writing to a hash engine cannot fail");
         }
         engine.input(sha256::Hash::from_engine(enc_sequences).as_ref());
 
         // sha_outputs (Precomputed by BIP341 logic)
         let mut enc = sha256::Hash::engine();
         for txout in tx.output.iter() {
-            txout.consensus_encode(&mut enc).unwrap();
+            txout
+                .consensus_encode(&mut enc)
+                .expect("writing to a hash engine cannot fail");
         }
         engine.input(sha256::Hash::from_engine(enc).as_ref());
     }

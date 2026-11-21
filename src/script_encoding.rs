@@ -1,18 +1,30 @@
 //! The script encoding the emulated SAKE script
 
+use std::io::Cursor;
+
 use bitcoin::{
-    ScriptBuf, XOnlyPublicKey,
+    ScriptBuf, VarInt, XOnlyPublicKey,
+    consensus::{Decodable, Encodable},
     opcodes::all::{OP_CHECKSIG, OP_CHECKSIGADD, OP_DROP, OP_GREATERTHANOREQUAL},
-    script::{PushBytesBuf, PushBytesError},
+    script::{Instruction, PushBytesBuf, PushBytesError},
 };
 
 pub(crate) const PREFIX: &[u8; 4] = b"SAKE";
-pub(crate) const MAX_SUPPORTED_VERSION_VERSION: u8 = 0;
+/// Highest supported encoding version (0 = single push, 1 = chunked).
+pub(crate) const MAX_SUPPORTED_VERSION_VERSION: u8 = 1;
 pub(crate) const VERSION_LEN: usize = 1;
+const VERSION_SINGLE_PUSH: u8 = 0;
+const VERSION_CHUNKED: u8 = 1;
+/// Maximum size of one tapscript push element (BIP-342).
+const MAX_PUSH_SIZE: usize = 520;
 
 pub trait EncodeSakeScript {
     /// - oracles: List of the emulation oracles' public keys in deterministic order.
     /// - threshold: Minimum number of oracles required to sign on the emulation success.
+    ///
+    /// Scripts that fit in a single 520-byte push use encoding version 0.
+    /// Larger scripts use version 1: a header push with the total length,
+    /// followed by `ceil(len / 520)` chunk pushes, each followed by OP_DROP.
     fn encode_sake_script(
         self,
         oracles: &[XOnlyPublicKey],
@@ -29,21 +41,41 @@ impl EncodeSakeScript for ScriptBuf {
         if oracles.is_empty() {
             return Err(ScriptEncodingError::MissingOracles);
         }
+        if threshold == 0 || threshold > oracles.len() || (oracles.len() == 1 && threshold != 1) {
+            return Err(ScriptEncodingError::InvalidThreshold);
+        }
 
-        let mut bytes = PushBytesBuf::with_capacity(PREFIX.len() + VERSION_LEN + self.len());
+        let mut builder = ScriptBuf::builder();
 
-        bytes.extend_from_slice(PREFIX).expect("infallible");
-        bytes
-            .push(MAX_SUPPORTED_VERSION_VERSION)
-            .expect("infallible");
-        bytes
-            .extend_from_slice(self.as_bytes())
-            .map_err(ScriptEncodingError::SizeLimit)?;
+        if PREFIX.len() + VERSION_LEN + self.len() <= MAX_PUSH_SIZE {
+            // Version 0: the whole script fits in one push.
+            let mut bytes = PushBytesBuf::with_capacity(PREFIX.len() + VERSION_LEN + self.len());
+            bytes.extend_from_slice(PREFIX).expect("infallible");
+            bytes.push(VERSION_SINGLE_PUSH).expect("infallible");
+            bytes
+                .extend_from_slice(self.as_bytes())
+                .map_err(ScriptEncodingError::SizeLimit)?;
+            builder = builder.push_slice(bytes).push_opcode(OP_DROP);
+        } else {
+            // Version 1: length header followed by <=520-byte chunks.
+            let mut header = PushBytesBuf::new();
+            header.extend_from_slice(PREFIX).expect("infallible");
+            header.push(VERSION_CHUNKED).expect("infallible");
+            let mut length = Vec::new();
+            VarInt(self.len() as u64)
+                .consensus_encode(&mut length)
+                .expect("writing to a Vec cannot fail");
+            header
+                .extend_from_slice(&length)
+                .map_err(ScriptEncodingError::SizeLimit)?;
+            builder = builder.push_slice(header).push_opcode(OP_DROP);
 
-        let mut builder = ScriptBuf::builder()
-            // Script encoding
-            .push_slice(bytes)
-            .push_opcode(OP_DROP);
+            for chunk in self.as_bytes().chunks(MAX_PUSH_SIZE) {
+                let chunk = PushBytesBuf::try_from(chunk.to_vec())
+                    .map_err(ScriptEncodingError::SizeLimit)?;
+                builder = builder.push_slice(chunk).push_opcode(OP_DROP);
+            }
+        }
 
         // Oracle signature verification
         for (i, oracle) in oracles.iter().enumerate() {
@@ -65,49 +97,80 @@ impl EncodeSakeScript for ScriptBuf {
     }
 }
 
-pub(crate) fn extract_encoded_scripts(
-    inputs: &[(usize, ScriptBuf)],
-) -> Result<Vec<(usize, ScriptBuf)>, ScriptDecodingError> {
-    let results: Result<Vec<Option<(usize, ScriptBuf)>>, _> = inputs
-        .iter()
-        .map(|(i, script)| extract_encoded_script(script).map(|o| o.map(|s| (*i, s))))
-        .collect();
+pub(crate) fn extract_encoded_script(
+    script: &ScriptBuf,
+) -> Result<Option<ScriptBuf>, ScriptDecodingError> {
+    let mut instructions = script.instructions();
 
-    // Convert Vec<Option<T>> → Vec<T>, preserving errors
-    results.map(|vec| vec.into_iter().flatten().collect())
-}
-
-fn extract_encoded_script(script: &ScriptBuf) -> Result<Option<ScriptBuf>, ScriptDecodingError> {
-    let mut candidates = Vec::new();
-
-    for instruction in script.instructions().flatten() {
-        if let bitcoin::script::Instruction::PushBytes(bytes) = instruction {
-            let bytes = bytes.as_bytes();
-            if bytes.starts_with(PREFIX) {
-                candidates.push(bytes);
-            }
+    while let Some(instruction) = instructions.next() {
+        let instruction = instruction.map_err(ScriptDecodingError::Script)?;
+        let Instruction::PushBytes(bytes) = instruction else {
+            continue;
+        };
+        let bytes = bytes.as_bytes();
+        if !bytes.starts_with(PREFIX) {
+            continue;
         }
-    }
 
-    if candidates.len() > 1 {
-        return Err(ScriptDecodingError::MultipleEncodedScripts);
-    }
-
-    for &bytes in &candidates {
-        if let Some(&version) = bytes.get(PREFIX.len()) {
-            if version > MAX_SUPPORTED_VERSION_VERSION {
-                return Err(ScriptDecodingError::UnsupportedVersion);
-            }
-
-            let payload_start = PREFIX.len() + VERSION_LEN;
-            if payload_start <= bytes.len() {
-                let encoded = bytes[payload_start..].to_vec();
-                let script = ScriptBuf::from_bytes(encoded);
-                return Ok(Some(script));
-            }
-        } else {
-            return Err(ScriptDecodingError::MultipleEncodedScripts);
+        let version = *bytes
+            .get(PREFIX.len())
+            .ok_or(ScriptDecodingError::MissingVersion)?;
+        if version > MAX_SUPPORTED_VERSION_VERSION {
+            return Err(ScriptDecodingError::UnsupportedVersion);
         }
+        let payload_start = PREFIX.len() + VERSION_LEN;
+
+        return match version {
+            VERSION_SINGLE_PUSH => {
+                let encoded = bytes.get(payload_start..).unwrap_or_default().to_vec();
+                // Version 0 must be a single encoded script.
+                for instruction in instructions {
+                    if let Instruction::PushBytes(bytes) =
+                        instruction.map_err(ScriptDecodingError::Script)?
+                        && bytes.as_bytes().starts_with(PREFIX)
+                    {
+                        return Err(ScriptDecodingError::MultipleEncodedScripts);
+                    }
+                }
+                Ok(Some(ScriptBuf::from_bytes(encoded)))
+            }
+            VERSION_CHUNKED => {
+                let length_bytes = bytes
+                    .get(payload_start..)
+                    .ok_or(ScriptDecodingError::MissingLength)?;
+                let mut cursor = Cursor::new(length_bytes);
+                let total_len = VarInt::consensus_decode(&mut cursor)
+                    .map_err(|_| ScriptDecodingError::InvalidLength)?
+                    .0 as usize;
+
+                let mut encoded = Vec::new();
+                if total_len == 0 {
+                    return Ok(Some(ScriptBuf::from_bytes(encoded)));
+                }
+
+                for instruction in instructions {
+                    match instruction.map_err(ScriptDecodingError::Script)? {
+                        Instruction::PushBytes(chunk) => {
+                            let new_len = encoded
+                                .len()
+                                .checked_add(chunk.len())
+                                .ok_or(ScriptDecodingError::InvalidLength)?;
+                            if new_len > total_len {
+                                return Err(ScriptDecodingError::InvalidLength);
+                            }
+                            encoded.extend_from_slice(chunk.as_bytes());
+                            if encoded.len() == total_len {
+                                return Ok(Some(ScriptBuf::from_bytes(encoded)));
+                            }
+                        }
+                        Instruction::Op(OP_DROP) => {}
+                        _ => return Err(ScriptDecodingError::InvalidChunk),
+                    }
+                }
+                Err(ScriptDecodingError::InvalidLength)
+            }
+            _ => Err(ScriptDecodingError::UnsupportedVersion),
+        };
     }
 
     Ok(None)
@@ -120,6 +183,9 @@ pub enum ScriptEncodingError {
     /// No oracles XOnlyPublicKeys were provided,
     /// which risks that anyone can spend this script's input.
     MissingOracles,
+    /// The threshold must be between 1 and the number of oracles. A threshold
+    /// of 0 with multiple oracles would make the input anyone-can-spend.
+    InvalidThreshold,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +196,14 @@ pub enum ScriptDecodingError {
     MissingVersion,
     /// Version number is larger than the max supported version
     UnsupportedVersion,
+    /// Version 1 header is missing the script length
+    MissingLength,
+    /// Version 1 script length is inconsistent with the chunks
+    InvalidLength,
+    /// Version 1 chunk stream contains a non-push, non-OP_DROP instruction
+    InvalidChunk,
+    /// The native script could not be parsed
+    Script(bitcoin::script::Error),
 }
 
 #[cfg(test)]
@@ -169,6 +243,35 @@ mod tests {
         let decoded = extract_encoded_script(&script).unwrap().unwrap();
 
         assert_eq!(decoded, sake_script)
+    }
+
+    #[test]
+    fn test_invalid_thresholds() {
+        let secp = Secp256k1::new();
+        let mut rng = secp256k1::rand::thread_rng();
+        let pk = secp256k1::Keypair::new(&secp, &mut rng)
+            .x_only_public_key()
+            .0;
+        let script = script! { OP_1 };
+
+        assert!(matches!(
+            script.clone().encode_sake_script(&[pk], 0),
+            Err(ScriptEncodingError::InvalidThreshold)
+        ));
+        assert!(matches!(
+            script.clone().encode_sake_script(&[pk], 2),
+            Err(ScriptEncodingError::InvalidThreshold)
+        ));
+        assert!(matches!(
+            script.clone().encode_sake_script(&[pk, pk], 0),
+            Err(ScriptEncodingError::InvalidThreshold)
+        ));
+        assert!(matches!(
+            script.clone().encode_sake_script(&[pk, pk], 3),
+            Err(ScriptEncodingError::InvalidThreshold)
+        ));
+        assert!(script.clone().encode_sake_script(&[pk], 1).is_ok());
+        assert!(script.encode_sake_script(&[pk, pk], 2).is_ok());
     }
 
     #[test]

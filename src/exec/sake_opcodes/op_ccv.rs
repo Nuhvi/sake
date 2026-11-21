@@ -81,7 +81,16 @@ impl CCVInputState {
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_ccv(&mut self) -> Result<(), ExecError> {
-        // Stack format (bottom to top): <mode> <taptree> <pk> <index> <data>
+        // Stack format (bottom to top): <data> <index> <pk> <taptree> <mode>.
+        //
+        // Only the mode is needed to decide whether this is an undefined
+        // (forward-compatible) mode, which makes the whole script succeed.
+        let mode_bytes = self.stack.topstr(-1)?;
+        let mode_value = read_scriptint(&mode_bytes, 4)?;
+        if !(-1..=2).contains(&mode_value) {
+            return Err(ExecError::NoMoreInstructions { success: true });
+        }
+
         self.stack.needn(5)?;
 
         let mode_bytes = self.stack.popstr()?;
@@ -90,16 +99,10 @@ impl<'a> Exec<'a> {
         let index_bytes = self.stack.popstr()?;
         let data = self.stack.popstr()?;
 
-        // Decode mode as minimally encoded integer (max 8 bytes for i64)
-        let mode: CCVMode = read_scriptint(&mode_bytes, 8)?.into();
-
-        // Undefined modes succeed immediately (soft fork safety)
-        if mode == CCVMode::Undefined {
-            return Ok(());
-        }
+        let mode: CCVMode = read_scriptint(&mode_bytes, 4)?.into();
 
         // Decode index
-        let mut index = read_scriptint(&index_bytes, 8)?;
+        let mut index = read_scriptint(&index_bytes, 4)?;
 
         // Replace -1 with current input index
         if index == -1 {
@@ -112,22 +115,19 @@ impl<'a> Exec<'a> {
 
         // Determine if checking input or output
         let (target_script, target_amount) = if mode == CCVMode::CheckInput {
-            if index as usize >= self.prevouts.len() {
+            let index = index as usize;
+            let prevout = self.prevouts.get(index).ok_or(ExecError::InvalidCCVIndex)?;
+            if index >= self.sighashcache.transaction().input.len() {
                 return Err(ExecError::InvalidCCVIndex);
             }
-            (
-                self.prevouts[index as usize].script_pubkey.to_bytes(),
-                self.prevouts[index as usize].value.to_sat(),
-            )
+            (prevout.script_pubkey.to_bytes(), prevout.value.to_sat())
         } else {
             let tx = self.sighashcache.transaction();
-            if index as usize >= tx.output.len() {
-                return Err(ExecError::InvalidCCVIndex);
-            }
-            (
-                tx.output[index as usize].script_pubkey.to_bytes(),
-                tx.output[index as usize].value.to_sat(),
-            )
+            let output = tx
+                .output
+                .get(index as usize)
+                .ok_or(ExecError::InvalidCCVIndex)?;
+            (output.script_pubkey.to_bytes(), output.value.to_sat())
         };
 
         // Process taptree parameter
@@ -182,8 +182,9 @@ impl<'a> Exec<'a> {
             CCVMode::CheckInput => {
                 // Input mode: no amount checks needed
             }
-            _ => {
-                // Undefined modes are handled earlier (return success)
+            CCVMode::Undefined => {
+                // Undefined modes are handled earlier.
+                unreachable!("undefined CCV mode handled at the top")
             }
         }
 
@@ -300,7 +301,11 @@ impl<'a> Exec<'a> {
             .ok_or(ExecError::CCVAmountConflict)?
             .borrow_mut();
 
-        if tx_state.output_checked_deduct[index] {
+        if *tx_state
+            .output_checked_deduct
+            .get(index)
+            .ok_or(ExecError::CCVAmountConflict)?
+        {
             return Err(ExecError::CCVAmountConflict);
         }
 
@@ -312,7 +317,11 @@ impl<'a> Exec<'a> {
 
         // Accumulate residual into the shared minimum — this is what enables
         // aggregation across multiple inputs targeting the same output.
-        let new_min = tx_state.output_min_amount[index]
+        let new_min = tx_state
+            .output_min_amount
+            .get(index)
+            .copied()
+            .ok_or(ExecError::CCVAmountConflict)?
             .checked_add(residual)
             .ok_or(ExecError::CCVInsufficientAmount)?;
 
@@ -325,8 +334,14 @@ impl<'a> Exec<'a> {
             let mut state = tx_state.borrow_mut();
             // Persist the accumulated minimum so subsequent DEFAULT checks from
             // other inputs build on top of it rather than starting from zero.
-            state.output_min_amount[index] = new_min;
-            state.output_checked_default[index] = true;
+            *state
+                .output_min_amount
+                .get_mut(index)
+                .ok_or(ExecError::CCVAmountConflict)? = new_min;
+            *state
+                .output_checked_default
+                .get_mut(index)
+                .ok_or(ExecError::CCVAmountConflict)? = true;
         }
 
         // Zero the residual — the input's amount is now committed to this output
@@ -363,15 +378,36 @@ impl<'a> Exec<'a> {
         }
 
         // BIP-443: conflict check comes second.
-        if tx_state.output_checked_default[index] || tx_state.output_checked_deduct[index] {
+        if *tx_state
+            .output_checked_default
+            .get(index)
+            .ok_or(ExecError::CCVAmountConflict)?
+            || *tx_state
+                .output_checked_deduct
+                .get(index)
+                .ok_or(ExecError::CCVAmountConflict)?
+        {
             return Err(ExecError::CCVAmountConflict);
         }
 
         drop(tx_state);
         if let Some(tx_state) = self.ccv_tx_state {
             let mut state = tx_state.borrow_mut();
-            state.output_min_amount[index] += amount;
-            state.output_checked_deduct[index] = true;
+            let new_min = state
+                .output_min_amount
+                .get(index)
+                .copied()
+                .ok_or(ExecError::CCVAmountConflict)?
+                .checked_add(amount)
+                .ok_or(ExecError::CCVInsufficientAmount)?;
+            *state
+                .output_min_amount
+                .get_mut(index)
+                .ok_or(ExecError::CCVAmountConflict)? = new_min;
+            *state
+                .output_checked_deduct
+                .get_mut(index)
+                .ok_or(ExecError::CCVAmountConflict)? = true;
         }
 
         if let Some(ref mut input_state) = self.ccv_input_state {
@@ -388,19 +424,6 @@ impl<'a> Exec<'a> {
         bytes == [0x81]
     }
 
-    fn current_input_taptree(&self) -> Result<TapNodeHash, ExecError> {
-        // For tapscript, the leaf hash is computed from the script
-        // In a full implementation, we'd track the taptree from the control block
-        // For now, return a default empty tree hash
-        Ok(TapNodeHash::from_slice(&[0u8; 32]).unwrap())
-    }
-
-    fn current_input_internal_key(&self) -> Result<XOnlyPublicKey, ExecError> {
-        // In a real implementation, this would come from the control block
-        // For testing, we return the NUMS key
-        XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).map_err(|_| ExecError::InvalidCCVPubkey)
-    }
-
     fn make_p2tr_script(&self, key: &XOnlyPublicKey) -> Result<Vec<u8>, ExecError> {
         // Create P2TR scriptPubKey: OP_1 (0x51) + 32-byte key
         let mut script = vec![0x51, 0x20]; // OP_1 + push 32 bytes
@@ -414,7 +437,7 @@ mod tests {
     use super::*;
     use crate::script_encoding::EncodeSakeScript;
     use crate::witness_carrier::SakeWitnessCarrier;
-    use crate::{Error, validate};
+    use crate::{Error, SakeInput, validate};
     use bitcoin::key::{Keypair, Secp256k1};
     use bitcoin::secp256k1::XOnlyPublicKey;
     use bitcoin::{Amount, ScriptBuf, Transaction, TxOut, consensus::deserialize};
@@ -588,7 +611,7 @@ mod tests {
         };
 
         let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .encode_sake_script(&[dummy_oracle_pk()], 1)
             .unwrap();
 
         // ==== SUCCESS CASE ====
@@ -605,7 +628,7 @@ mod tests {
             output: vec![outputs[0].clone(), witness_carrier],
         };
 
-        let result = validate(&tx, &prevouts, &[(0, encoded_script.clone())]);
+        let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script.clone())]);
         assert!(
             result.is_ok(),
             "State transition should succeed: witness old_data validated, new_data computed via OP_CAT: {:?}",
@@ -626,7 +649,11 @@ mod tests {
             output: vec![outputs[0].clone(), malicious_witness_carrier],
         };
 
-        let malicious_result = validate(&malicious_tx, &prevouts, &[(0, encoded_script)]);
+        let malicious_result = validate(
+            &malicious_tx,
+            &prevouts,
+            &[SakeInput::new(0, encoded_script)],
+        );
         assert!(
             matches!(
                 malicious_result,
@@ -713,7 +740,7 @@ mod tests {
         };
 
         let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .encode_sake_script(&[dummy_oracle_pk()], 1)
             .unwrap();
 
         // ==== SUCCESS CASE ====
@@ -728,7 +755,7 @@ mod tests {
             output: vec![outputs[0].clone(), witness_carrier],
         };
 
-        let result = validate(&tx, &prevouts, &[(0, encoded_script.clone())]);
+        let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script.clone())]);
         assert!(
             result.is_ok(),
             "State transition should succeed: data persists, taptree upgraded: {:?}",
@@ -754,7 +781,11 @@ mod tests {
             output: vec![outputs_wrong_taptree[0].clone(), malicious_witness_carrier],
         };
 
-        let malicious_result = validate(&malicious_tx, &prevouts, &[(0, encoded_script)]);
+        let malicious_result = validate(
+            &malicious_tx,
+            &prevouts,
+            &[SakeInput::new(0, encoded_script)],
+        );
         assert!(
             matches!(
                 malicious_result,
@@ -840,7 +871,7 @@ mod tests {
         };
 
         let encoded_script = ccv_script
-            .encode_sake_script(&[dummy_oracle_pk()], 0)
+            .encode_sake_script(&[dummy_oracle_pk()], 1)
             .unwrap();
 
         // ==== SUCCESS CASE ====
@@ -856,7 +887,7 @@ mod tests {
             output: vec![outputs[0].clone(), witness_carrier],
         };
 
-        let result = validate(&tx, &prevouts, &[(0, encoded_script.clone())]);
+        let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script.clone())]);
         assert!(
             result.is_ok(),
             "Data availability proof should succeed with correct witness: {:?}",
@@ -875,7 +906,11 @@ mod tests {
             output: vec![outputs[0].clone(), malicious_witness_carrier],
         };
 
-        let malicious_result = validate(&malicious_tx, &prevouts, &[(0, encoded_script)]);
+        let malicious_result = validate(
+            &malicious_tx,
+            &prevouts,
+            &[SakeInput::new(0, encoded_script)],
+        );
         assert!(
             matches!(
                 malicious_result,
@@ -908,7 +943,27 @@ mod tests {
 
     #[test]
     fn test_ccv_exec_vectors() {
+        use std::collections::BTreeMap;
+
+        use bitcoin::{
+            blockdata::script::Builder,
+            opcodes::all::{OP_PUSHNUM_NEG1, OP_RETURN_187},
+            script::PushBytesBuf,
+        };
+
         use crate::script_encoding::EncodeSakeScript;
+
+        fn push_minimal(builder: Builder, bytes: &[u8]) -> Builder {
+            if bytes.is_empty() {
+                builder.push_int(0)
+            } else if bytes == [0x81] {
+                builder.push_opcode(OP_PUSHNUM_NEG1)
+            } else if bytes.len() == 1 && (1..=16).contains(&bytes[0]) {
+                builder.push_int(bytes[0] as i64)
+            } else {
+                builder.push_slice(PushBytesBuf::try_from(bytes.to_vec()).unwrap())
+            }
+        }
 
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src/exec/sake_opcodes/op_ccv/exec.json");
@@ -918,66 +973,94 @@ mod tests {
             serde_json::from_slice(&file).expect("Failed to parse test vectors JSON");
 
         for (i, tv) in vectors.iter().enumerate() {
-            println!("Running test vector {}: txid={}", i, tv.txid);
+            println!("Running test vector {i}: txid={}", tv.txid);
 
             let tx_bytes = hex::decode(&tv.rawtx).expect("Invalid rawtx hex");
-            let tx: Transaction = deserialize(&tx_bytes).expect("Failed to parse rawtx");
+            let mut tx: Transaction = deserialize(&tx_bytes).expect("Failed to parse rawtx");
 
             let mut prevouts = vec![];
             for prevout in &tv.prevouts {
                 let amount = prevout[0].as_u64().expect("Invalid amount");
                 let script_hex = prevout[1].as_str().expect("Invalid script");
                 let script_bytes = hex::decode(script_hex).expect("Invalid script hex");
-                let script = ScriptBuf::from_bytes(script_bytes);
                 prevouts.push(TxOut {
                     value: Amount::from_sat(amount),
-                    script_pubkey: script,
+                    script_pubkey: ScriptBuf::from_bytes(script_bytes),
                 });
             }
 
-            for ccv_exec in &tv.ccv_executions {
-                let input_index = ccv_exec.input_index;
-                assert!(input_index < tx.input.len(), "input_index out of bounds");
+            // Capture the current input's spend information from the vector's
+            // real taproot witness before adding the SAKE carrier.
+            let spend_info = tx
+                .input
+                .first()
+                .and_then(|input| SakeInput::from_witness(0, &input.witness).ok())
+                .and_then(|original| {
+                    original
+                        .control_block
+                        .as_ref()
+                        .map(|cb| crate::current_spend_info(&original.script, cb))
+                });
 
-                let data_bytes = hex::decode(&ccv_exec.data).unwrap_or_default();
-                let index_bytes = hex::decode(&ccv_exec.index).unwrap_or_default();
-                let pk_bytes = hex::decode(&ccv_exec.pk).unwrap_or_default();
-                let taptree_bytes = hex::decode(&ccv_exec.taptree).unwrap_or_default();
-                let flags_bytes = hex::decode(&ccv_exec.flags).unwrap_or_default();
+            let mut by_input: BTreeMap<usize, Vec<&CcvExecution>> = BTreeMap::new();
+            for execution in &tv.ccv_executions {
+                by_input
+                    .entry(execution.input_index)
+                    .or_default()
+                    .push(execution);
+            }
 
-                let mode: i64 = if flags_bytes.is_empty() {
-                    -1
-                } else {
-                    flags_bytes.first().copied().unwrap_or(0xFF) as i64
-                };
+            let mut inputs = vec![];
+            let mut carrier = vec![];
+            for (input_index, executions) in by_input {
+                let mut builder = ScriptBuf::builder();
+                for execution in executions {
+                    let data = hex::decode(&execution.data).unwrap_or_default();
+                    let index = hex::decode(&execution.index).unwrap_or_default();
+                    let pk = hex::decode(&execution.pk).unwrap_or_default();
+                    let taptree = hex::decode(&execution.taptree).unwrap_or_default();
+                    let flags = hex::decode(&execution.flags).unwrap_or_default();
+                    // Empty flags is the default mode, CHECK_OUTPUT (0).
+                    let mode: i64 = if flags.is_empty() {
+                        0
+                    } else {
+                        bitcoin::script::read_scriptint(&flags).expect("Invalid CCV mode")
+                    };
 
-                let ccv_script = script! {
-                    <data_bytes.clone()>
-                    <index_bytes.clone()>
-                    <pk_bytes.clone()>
-                    <taptree_bytes.clone()>
-                    <mode>
-                    OP_CHECKCONTRACTVERIFY
-                };
-
-                let encoded_script = ccv_script
-                    .encode_sake_script(&[dummy_oracle_pk()], 0)
+                    builder = push_minimal(builder, &data);
+                    builder = push_minimal(builder, &index);
+                    builder = push_minimal(builder, &pk);
+                    builder = push_minimal(builder, &taptree);
+                    builder = builder.push_int(mode).push_opcode(OP_RETURN_187);
+                }
+                builder = builder.push_int(1);
+                let emulated = builder.into_script();
+                let encoded = emulated
+                    .encode_sake_script(&[dummy_oracle_pk()], 1)
                     .expect("Failed to encode SAKE script");
 
-                let mut tx = tx.clone();
-                let witness_carrier = TxOut::sake_witness_carrier(&[(input_index, vec![])]);
-                tx.output.push(witness_carrier);
+                inputs.push(SakeInput {
+                    input_index,
+                    script: encoded,
+                    control_block: None,
+                    spend_info,
+                });
+                carrier.push((input_index, vec![]));
+            }
 
-                let result = validate(&tx, &prevouts, &[(input_index, encoded_script)]);
+            tx.output.push(TxOut::sake_witness_carrier(&carrier));
+            let result = validate(&tx, &prevouts, &inputs);
 
-                if tv.broadcast_error.is_some() {
-                    assert!(
-                        result.is_err(),
-                        "Test vector {} expected error but got success: {:?}",
-                        i,
-                        result
-                    );
-                }
+            if tv.broadcast_error.is_some() {
+                assert!(
+                    result.is_err(),
+                    "Test vector {i} expected error but got success: {result:?}"
+                );
+            } else {
+                assert!(
+                    result.is_ok(),
+                    "Test vector {i} expected success but got {result:?}"
+                );
             }
         }
     }
@@ -1023,7 +1106,7 @@ mod tests {
 
             // Encode the script and witness
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1034,7 +1117,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "CCVMode::CheckOutput should succeed with matching output: {:?}",
@@ -1074,7 +1157,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1085,7 +1168,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
                 "Should fail with insufficient amount: {:?}",
@@ -1126,7 +1209,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1137,7 +1220,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "CCVMode::CheckOutput_IGNORE_AMOUNT should succeed regardless of amount: {:?}",
@@ -1193,7 +1276,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1204,7 +1287,7 @@ mod tests {
                 output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "Deduct + Default mode should work for splitting: {:?}",
@@ -1242,7 +1325,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1253,7 +1336,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
                 "Should fail when deducting more than available: {:?}",
@@ -1293,7 +1376,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1304,7 +1387,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "CCVMode::CheckInput should succeed: {:?}",
@@ -1325,8 +1408,9 @@ mod tests {
             let script = script! {
                 <vec![0x01u8; 32]>  // <data>
                 OP_0                // <index=0>
-                <vec![0x02u8; 32]>  // <pk>
-                // Missing <taptree> and <mode>
+                OP_0                // <pk=empty>
+                OP_0                // <mode=0>
+                // Missing <taptree>; only 4 elements
                 OP_CHECKCONTRACTVERIFY
             };
 
@@ -1361,7 +1445,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1372,7 +1456,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(result.is_ok(), "Empty pk should use NUMS key: {:?}", result);
         }
 
@@ -1403,7 +1487,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1414,7 +1498,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "Data tweak should be applied correctly: {:?}",
@@ -1451,7 +1535,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1462,7 +1546,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVScriptMismatch))),
                 "Should fail with script mismatch: {:?}",
@@ -1498,7 +1582,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1509,7 +1593,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "Undefined mode should succeed for soft fork safety: {:?}",
@@ -1542,7 +1626,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1553,7 +1637,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::InvalidCCVIndex))),
                 "Should fail with invalid index: {:?}",
@@ -1586,7 +1670,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1597,7 +1681,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::InvalidCCVIndex))),
                 "Should fail with invalid index: {:?}",
@@ -1650,7 +1734,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1661,7 +1745,7 @@ mod tests {
                 output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
                 "Should fail with amount conflict for DEDUCT then DEFAULT: {:?}",
@@ -1724,7 +1808,7 @@ mod tests {
                     OP_CHECKCONTRACTVERIFY
                     OP_1
                 };
-                s.encode_sake_script(&[dummy_oracle_pk()], 0).unwrap()
+                s.encode_sake_script(&[dummy_oracle_pk()], 1).unwrap()
             };
 
             // Input 1 script: DEDUCT on output 0 — should fail with CCVAmountConflict
@@ -1749,7 +1833,14 @@ mod tests {
                 output: vec![output, witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, script_input_0), (1, script_input_1)]);
+            let result = validate(
+                &tx,
+                &prevouts,
+                &[
+                    SakeInput::new(0, script_input_0),
+                    SakeInput::new(1, script_input_1),
+                ],
+            );
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
                 "Should fail with amount conflict when input 1 tries DEDUCT after input 0 used DEFAULT on same output: {:?}",
@@ -1800,7 +1891,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1811,7 +1902,7 @@ mod tests {
                 output: vec![outputs[0].clone(), outputs[1].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVAmountConflict))),
                 "Should fail with amount conflict for double DEDUCT: {:?}",
@@ -1876,7 +1967,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -1887,7 +1978,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
                 "Spec checks residual before conflict flags; expected CCVInsufficientAmount, got: {:?}",
@@ -1929,7 +2020,7 @@ mod tests {
                 },
             ];
 
-            let ccv_script_for = |input_idx: usize| {
+            let ccv_script_for = |_input_idx: usize| {
                 let s = script! {
                     OP_0                              // <data=empty>
                     OP_0                              // <index=0>
@@ -1939,8 +2030,7 @@ mod tests {
                     OP_CHECKCONTRACTVERIFY
                     OP_1
                 };
-                s.encode_sake_script(&[dummy_oracle_pk()], input_idx)
-                    .unwrap()
+                s.encode_sake_script(&[dummy_oracle_pk()], 1).unwrap()
             };
 
             let make_tx = |output_amount: u64| {
@@ -1954,7 +2044,10 @@ mod tests {
                 }
             };
 
-            let scripts = [(0, ccv_script_for(0)), (1, ccv_script_for(1))];
+            let scripts = [
+                SakeInput::new(0, ccv_script_for(0)),
+                SakeInput::new(1, ccv_script_for(1)),
+            ];
 
             // Success: output holds exactly the aggregated 1000 sats
             let result = validate(&make_tx(1000), &prevouts, &scripts);
@@ -2005,7 +2098,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -2016,7 +2109,7 @@ mod tests {
                 output: vec![outputs[0].clone(), witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::InvalidCCVIndex))),
                 "index=-2 should fail with InvalidCCVIndex: {:?}",
@@ -2081,7 +2174,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -2097,7 +2190,7 @@ mod tests {
                 ],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 result.is_ok(),
                 "DEDUCT on output 0, DEDUCT on output 1, DEFAULT on output 2 should all succeed independently: {:?}",
@@ -2163,7 +2256,7 @@ mod tests {
             };
 
             let encoded_script = ccv_script
-                .encode_sake_script(&[dummy_oracle_pk()], 0)
+                .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
             let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
@@ -2179,7 +2272,7 @@ mod tests {
                 ],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
+            let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded_script)]);
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
                 "Third DEDUCT should fail after residual is depleted below output amount: {:?}",
@@ -2222,7 +2315,7 @@ mod tests {
                     OP_CHECKCONTRACTVERIFY
                     OP_1
                 };
-                s.encode_sake_script(&[dummy_oracle_pk()], 0).unwrap()
+                s.encode_sake_script(&[dummy_oracle_pk()], 1).unwrap()
             };
 
             // Input 1 has residual=100, output 0 has value=300:
@@ -2243,7 +2336,14 @@ mod tests {
                 output: vec![output, witness_carrier],
             };
 
-            let result = validate(&tx, &prevouts, &[(0, script_input_0), (1, script_input_1)]);
+            let result = validate(
+                &tx,
+                &prevouts,
+                &[
+                    SakeInput::new(0, script_input_0),
+                    SakeInput::new(1, script_input_1),
+                ],
+            );
             assert!(
                 matches!(result, Err(Error::Exec(ExecError::CCVInsufficientAmount))),
                 "Residual check fires before conflict check even when both conditions are true: {:?}",

@@ -1,6 +1,7 @@
 use bitcoin::{
     TapSighashType, XOnlyPublicKey,
-    secp256k1::{self, Message},
+    hashes::Hash,
+    secp256k1::{self, ffi::CPtr},
     sighash::Prevouts,
 };
 
@@ -39,18 +40,22 @@ impl<'a> Exec<'a> {
                 Some((self.leaf_hash, u32::MAX)),
                 sighash_type,
             )
-            .expect("Prevout consistency checked at Exec init");
+            .map_err(ExecError::Sighash)?;
 
-        self.verify_signature(sig, pk, sighash.into())
+        self.verify_signature(sig, pk, sighash.as_byte_array())
     }
 
-    /// Shared logic for all Schnorr-based signature checks (OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_CHECKSIGADD, and CSFS).
-    /// Takes a closure to provide the message digest only when needed.
+    /// Shared logic for all Schnorr-based signature checks (OP_CHECKSIG,
+    /// OP_CHECKSIGVERIFY, OP_CHECKSIGADD, and CSFS).
+    ///
+    /// `msg` is the raw BIP-340 message. BIP-348 permits messages of any
+    /// length, so this goes through the secp256k1 FFI directly instead of the
+    /// 32-byte-only `Message` wrapper.
     pub(crate) fn verify_signature(
         &mut self,
         sig_bytes: &[u8],
         pk_bytes: &[u8],
-        msg: Message,
+        msg: &[u8],
     ) -> Result<bool, ExecError> {
         // 1. Sigop Budgeting
         if !sig_bytes.is_empty() {
@@ -73,19 +78,47 @@ impl<'a> Exec<'a> {
         // 4. Known Key Type (32-byte X-Only)
         if pk_bytes.len() == 32 {
             let pk = XOnlyPublicKey::from_slice(pk_bytes).map_err(|_| ExecError::PubkeyType)?;
-
-            // Note: handle_op_checksig handles sighash bytes, so sig_bytes here is raw 64 bytes
             let sig = secp256k1::schnorr::Signature::from_slice(sig_bytes)
                 .map_err(|_| ExecError::SchnorrSigSize)?;
 
-            self.secp
-                .verify_schnorr(&sig, &msg, &pk)
-                .map_err(|_| ExecError::SchnorrSig)?;
+            if !self.verify_schnorr_bytes(&sig, msg, &pk) {
+                return Err(ExecError::SchnorrSig);
+            }
         }
 
         // 5. Unknown Key Type (Success/Upgrade Path)
         // If pk.len() != 32 and is not empty, it succeeds as per BIP 341/348.
         Ok(true)
+    }
+
+    fn verify_schnorr_bytes(
+        &self,
+        sig: &secp256k1::schnorr::Signature,
+        msg: &[u8],
+        pk: &XOnlyPublicKey,
+    ) -> bool {
+        use bitcoin::secp256k1::ffi;
+
+        // The C function does not dereference the message pointer when the
+        // length is zero, but a dangling pointer is still poor form.
+        let empty = [0u8; 1];
+        let msg_ptr = if msg.is_empty() {
+            empty.as_ptr()
+        } else {
+            msg.as_ptr()
+        };
+
+        // SAFETY: all pointers come from live secp256k1 objects and `msg` is
+        // valid for `msg.len()` bytes.
+        unsafe {
+            ffi::secp256k1_schnorrsig_verify(
+                self.secp.ctx().as_ptr(),
+                sig.as_c_ptr(),
+                msg_ptr,
+                msg.len(),
+                pk.as_c_ptr(),
+            ) == 1
+        }
     }
 }
 

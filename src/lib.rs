@@ -27,12 +27,15 @@
     )
 )]
 
+use std::collections::HashMap;
+
 use bitcoin::{
-    ScriptBuf, Transaction, TxOut,
+    Script, ScriptBuf, TapSighashType, Transaction, TxOut, Witness, XOnlyPublicKey,
     hashes::Hash,
     key::{Keypair, Secp256k1},
     secp256k1::{All, Message, schnorr},
     sighash::{Prevouts, SighashCache},
+    taproot::{ControlBlock, LeafVersion, TapLeafHash, TapNodeHash},
 };
 
 mod error;
@@ -43,9 +46,10 @@ mod witness_carrier;
 
 use exec::Exec;
 
-pub use error::Error;
-pub use script_encoding::EncodeSakeScript;
-pub use witness_carrier::SakeWitnessCarrier;
+pub use error::{Error, ExecError};
+pub use script_encoding::{EncodeSakeScript, ScriptDecodingError, ScriptEncodingError};
+pub use stack::Stack;
+pub use witness_carrier::{SakeWitnessCarrier, WitnessCarrierError};
 
 pub use exec::op_amount::{
     OP_AMOUNT, OP_AMOUNT_CURRENT_INPUT_SELECTOR, OpAmountError, op_amount_input_selector,
@@ -55,185 +59,348 @@ pub use exec::op_ccv::{BIP341_NUMS_KEY, CCVMode, OP_CCV, OP_CHECKCONTRACTVERIFY}
 pub use exec::op_csfs::{OP_CHECKSIGFROMSTACK, OP_CSFS};
 pub use exec::op_th::{OP_TEMPLATEHASH, OP_TH};
 
-use crate::script_encoding::extract_encoded_scripts;
-
-/// Validates SAKE scripts in a transaction.
+/// One input to validate.
 ///
-/// - `tx`: The transaction (used to calculate the sighash) and the last output contains the script witnesses as an OP_RETURN
-/// - `prevouts`: All the previous [TxOut]s for all the inputs (used to calculate the sighash).
-/// - `scripts` : Tuples of (`input index`, `ScriptBuf`) for the inputs to evaluate.
-///     - `input_index`: used in sighash calculation.
-///     - `ScriptBuf`: locking script for this input, evaluated with the respective script witness defcoded from the last [TxOut] (`OP_RETURN`) in the `tx`.
-pub fn validate(
-    tx: &Transaction,
-    prevouts: &[TxOut],
-    inputs: &[(usize, ScriptBuf)],
-) -> Result<(), Error> {
-    validate_inner(&mut tx.clone(), prevouts, inputs)
+/// Only inputs whose `script` contains a SAKE encoding are validated and
+/// signed. Other inputs are ignored: an oracle cannot attest to arbitrary
+/// native tapscript execution without full chain state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SakeInput {
+    /// Index of this input in the transaction.
+    pub input_index: usize,
+    /// The full tapscript for this input.
+    pub script: ScriptBuf,
+    /// Control block proving `script` against the spent output. Used to derive
+    /// the current input's internal key and taptree for
+    /// `OP_CHECKCONTRACTVERIFY`'s `-1` values.
+    pub control_block: Option<ControlBlock>,
+    /// Test-only override for the current input's internal key and taptree
+    /// Merkle root, used by `OP_CHECKCONTRACTVERIFY`'s `-1` values. This field
+    /// is not part of the public API; production derives the spend info from
+    /// `control_block`.
+    #[cfg(test)]
+    pub(crate) spend_info: Option<(XOnlyPublicKey, TapNodeHash)>,
 }
 
-/// Validates SAKE scripts in a transaction and return signatures over
-/// inputs once all spending conditions for all inputs are satisiied.
+impl SakeInput {
+    /// Builds an input from an explicit script.
+    pub fn new(input_index: usize, script: ScriptBuf) -> Self {
+        Self::new_inner(input_index, script, None)
+    }
+
+    #[cfg(not(test))]
+    fn new_inner(
+        input_index: usize,
+        script: ScriptBuf,
+        control_block: Option<ControlBlock>,
+    ) -> Self {
+        Self {
+            input_index,
+            script,
+            control_block,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_inner(
+        input_index: usize,
+        script: ScriptBuf,
+        control_block: Option<ControlBlock>,
+    ) -> Self {
+        Self {
+            input_index,
+            script,
+            control_block,
+            spend_info: None,
+        }
+    }
+
+    /// Builds an input from a full taproot witness: `[stack..., script, control_block]`.
+    ///
+    /// The initial stack is not needed for SAKE inputs (the emulation stack is
+    /// read from the witness carrier). An annex (last element starting with
+    /// `0x50`) is rejected.
+    pub fn from_witness(input_index: usize, witness: &Witness) -> Result<Self, Error> {
+        let elements: Vec<&[u8]> = witness.iter().collect();
+        if elements.len() >= 2
+            && elements
+                .last()
+                .and_then(|element| element.first())
+                .is_some_and(|byte| *byte == 0x50)
+        {
+            return Err(Error::AnnexNotSupported { input: input_index });
+        }
+        let script_index = elements
+            .len()
+            .checked_sub(2)
+            .ok_or(Error::InvalidWitness { input: input_index })?;
+        let script = elements
+            .get(script_index)
+            .ok_or(Error::InvalidWitness { input: input_index })?;
+        let control_block = elements
+            .get(script_index + 1)
+            .ok_or(Error::InvalidWitness { input: input_index })?;
+        let control_block = ControlBlock::decode(control_block).map_err(Error::ControlBlock)?;
+        Ok(Self::new_inner(
+            input_index,
+            ScriptBuf::from_bytes(script.to_vec()),
+            Some(control_block),
+        ))
+    }
+}
+
+/// Validates the SAKE inputs of a transaction.
 ///
-/// - `keypair`: Oracle's Keypair to sign the transaction inputs Sighashes with after validation.
-/// - `tx`: The transaction (used to calculate the sighash) and the last output contains the script witnesses as an OP_RETURN
-/// - `prevouts`: All the previous [TxOut]s for all the inputs (used to calculate the sighash).
-/// - `scripts` : Tuples of (`input index`, `ScriptBuf`) for the inputs to evaluate.
-///     - `input_index`: used in sighash calculation.
-///     - `ScriptBuf`: locking script for this input, evaluated with the respective script witness defcoded from the last [TxOut] (`OP_RETURN`) in the `tx`.
+/// Inputs whose script does not contain a SAKE encoding are ignored. If there
+/// are no SAKE inputs, validation succeeds without doing anything.
+///
+/// - `tx`: The transaction (used to calculate the sighash) and, when it has
+///   SAKE inputs, the last output is the witness carrier (`OP_RETURN`).
+/// - `prevouts`: All the previous [TxOut]s for all the inputs.
+/// - `inputs`: The inputs to evaluate.
+pub fn validate(tx: &Transaction, prevouts: &[TxOut], inputs: &[SakeInput]) -> Result<(), Error> {
+    let secp = Secp256k1::new();
+    validate_inner(&secp, None, tx, prevouts, inputs).map(|_| ())
+}
+
+/// Validates SAKE inputs and returns one script-spend signature per SAKE input,
+/// together with the input index.
+///
+/// Signatures use `SIGHASH_DEFAULT` over the full tapscript leaf. Inputs whose
+/// script does not contain a SAKE encoding are ignored and produce no
+/// signature.
+///
+/// - `keypair`: Oracle's keypair.
+/// - `tx`, `prevouts`, `inputs`: See [`validate`].
 pub fn validate_and_sign(
     keypair: &Keypair,
     tx: &Transaction,
     prevouts: &[TxOut],
-    inputs: &[(usize, ScriptBuf)],
-) -> Result<Vec<schnorr::Signature>, Error> {
+    inputs: &[SakeInput],
+) -> Result<Vec<(usize, schnorr::Signature)>, Error> {
     let secp = Secp256k1::new();
     validate_and_sign_with_secp(&secp, keypair, tx, prevouts, inputs)
 }
 
-/// Validates SAKE scripts in a transaction and return signatures over
-/// inputs once all spending conditions for all inputs are satisiied.
-///
-/// - `secp`: [Secp256k1] context.
-/// - `keypair`: Oracle's Keypair to sign the transaction inputs Sighashes with after validation.
-/// - `tx`: The transaction (used to calculate the sighash) and the last output contains the script witnesses as an OP_RETURN
-/// - `prevouts`: All the previous [TxOut]s for all the inputs (used to calculate the sighash).
-/// - `scripts` : Tuples of (`input index`, `ScriptBuf`) for the inputs to evaluate.
-///     - `input_index`: used in sighash calculation.
-///     - `ScriptBuf`: locking script for this input, evaluated with the respective script witness defcoded from the last [TxOut] (`OP_RETURN`) in the `tx`.
+/// Like [`validate_and_sign`], with a caller-provided secp256k1 context.
 pub fn validate_and_sign_with_secp(
     secp: &Secp256k1<All>,
     keypair: &Keypair,
     tx: &Transaction,
     prevouts: &[TxOut],
-    inputs: &[(usize, ScriptBuf)],
-) -> Result<Vec<schnorr::Signature>, Error> {
-    let original_tx = tx.clone();
-    let mut emulated_tx = tx.clone();
+    inputs: &[SakeInput],
+) -> Result<Vec<(usize, schnorr::Signature)>, Error> {
+    validate_inner(secp, Some(keypair), tx, prevouts, inputs)
+}
 
-    validate_inner(&mut emulated_tx, prevouts, inputs)?;
+struct ParsedInput {
+    index: usize,
+    script: ScriptBuf,
+    spend_info: Option<(XOnlyPublicKey, TapNodeHash)>,
+    emulated: ScriptBuf,
+    sake_stack: Option<Vec<Vec<u8>>>,
+}
 
-    let mut signatures = Vec::with_capacity(inputs.len());
+fn validate_inner(
+    secp: &Secp256k1<All>,
+    keypair: Option<&Keypair>,
+    tx: &Transaction,
+    prevouts: &[TxOut],
+    inputs: &[SakeInput],
+) -> Result<Vec<(usize, schnorr::Signature)>, Error> {
+    if inputs.is_empty() {
+        return Err(Error::NoInputs);
+    }
+    if prevouts.len() != tx.input.len() {
+        return Err(Error::PrevoutsCountMismatch {
+            expected: tx.input.len(),
+            found: prevouts.len(),
+        });
+    }
 
-    // Taproot sighashes require knowledge of all prevouts being spent
-    let prevouts_all = Prevouts::All(prevouts);
+    let mut parsed = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        if input.input_index >= tx.input.len() {
+            return Err(Error::InvalidInputIndex {
+                input: input.input_index,
+                count: tx.input.len(),
+            });
+        }
+        let emulated = script_encoding::extract_encoded_script(&input.script)
+            .map_err(Error::InvalidScriptEncoding)?;
+        let Some(emulated) = emulated else {
+            // Not a SAKE input: the oracle does not validate native scripts.
+            continue;
+        };
+        let control_block = input.control_block.as_ref();
+        if let Some(control_block) = control_block {
+            let prevout = prevouts
+                .get(input.input_index)
+                .ok_or(Error::InvalidInputIndex {
+                    input: input.input_index,
+                    count: tx.input.len(),
+                })?;
+            verify_control_block(
+                secp,
+                prevout,
+                &input.script,
+                control_block,
+                input.input_index,
+            )?;
+        }
+        let derived_spend_info =
+            control_block.map(|control_block| current_spend_info(&input.script, control_block));
+        #[cfg(test)]
+        let override_spend_info = input.spend_info;
+        #[cfg(not(test))]
+        let override_spend_info: Option<(XOnlyPublicKey, TapNodeHash)> = None;
+        parsed.push(ParsedInput {
+            index: input.input_index,
+            script: input.script.clone(),
+            spend_info: override_spend_info.or(derived_spend_info),
+            emulated,
+            sake_stack: None,
+        });
+    }
 
-    // sighashcache from the original transaction.
-    let mut sighashcache = SighashCache::new(original_tx);
+    if parsed.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    for (input_idx, _script) in inputs {
-        let sighash = sighashcache
-            .taproot_key_spend_signature_hash(
-                *input_idx,
-                &prevouts_all,
-                bitcoin::TapSighashType::All,
-            )
-            .map_err(Error::SigningError)?;
+    // Remove the witness carrier from the transaction used by the emulator.
+    let mut stripped_tx = tx.clone();
+    let mut carrier: HashMap<usize, Vec<Vec<u8>>> = HashMap::new();
+    let carrier_output = stripped_tx
+        .output
+        .pop()
+        .ok_or(Error::InvalidWitnessCarriers(
+            witness_carrier::WitnessCarrierError::NotOpReturn,
+        ))?;
+    for (input_index, stack) in carrier_output
+        .parse_witness_stacks()
+        .map_err(Error::InvalidWitnessCarriers)?
+    {
+        if carrier.insert(input_index, stack).is_some() {
+            return Err(Error::DuplicateSakeWitness { input: input_index });
+        }
+    }
+    for parsed_input in parsed.iter_mut() {
+        let stack = carrier
+            .remove(&parsed_input.index)
+            .ok_or(Error::MissingSakeWitness {
+                input: parsed_input.index,
+            })?;
+        parsed_input.sake_stack = Some(stack);
+    }
+    if let Some((input_index, _)) = carrier.into_iter().next() {
+        return Err(Error::UnexpectedSakeWitness { input: input_index });
+    }
 
-        // Convert hash to SECP256K1 message
-        let msg = Message::from_digest(sighash.to_byte_array());
+    let ccv_tx_state =
+        std::cell::RefCell::new(exec::op_ccv::CCVTxState::new(stripped_tx.output.len()));
+    let mut full_sighashcache = SighashCache::new(tx.clone());
+    let mut stripped_sighashcache = SighashCache::new(stripped_tx.clone());
 
-        // Sign with Schnorr
-        let sig = secp.sign_schnorr(&msg, keypair);
-        signatures.push(sig);
+    let mut signatures = Vec::with_capacity(parsed.len());
+    for parsed_input in &parsed {
+        let signature = if let Some(keypair) = keypair {
+            let leaf_hash = TapLeafHash::from_script(&parsed_input.script, LeafVersion::TapScript);
+            let sighash = full_sighashcache
+                .taproot_script_spend_signature_hash(
+                    parsed_input.index,
+                    &Prevouts::All(prevouts),
+                    leaf_hash,
+                    TapSighashType::Default,
+                )
+                .map_err(Error::SigningError)?;
+            let msg = Message::from_digest(sighash.to_byte_array());
+            Some(secp.sign_schnorr(&msg, keypair))
+        } else {
+            None
+        };
+
+        let (internal_key, taptree) = match parsed_input.spend_info {
+            Some((internal_key, taptree)) => (Some(internal_key), Some(taptree)),
+            None => (None, None),
+        };
+        let stack = parsed_input
+            .sake_stack
+            .as_ref()
+            .ok_or(Error::MissingSakeWitness {
+                input: parsed_input.index,
+            })?
+            .clone();
+        let mut exec = Exec::new_with_ccv(
+            &mut stripped_sighashcache,
+            prevouts,
+            parsed_input.index,
+            &parsed_input.emulated,
+            stack,
+            &ccv_tx_state,
+            internal_key,
+            taptree,
+        )?;
+        run_exec(&mut exec, parsed_input.index)?;
+
+        if let Some(signature) = signature {
+            signatures.push((parsed_input.index, signature));
+        }
     }
 
     Ok(signatures)
 }
 
-fn validate_inner<'a>(
-    tx: &mut Transaction,
-    prevouts: &'a [TxOut],
-    inputs: &'a [(usize, ScriptBuf)],
-) -> Result<(), Error> {
-    if inputs.is_empty() {
-        return Err(Error::NoInputs);
-    }
-
-    // Step 1: Extract encoded input scripts
-    let inputs: Vec<_> = extract_encoded_scripts(inputs).map_err(Error::InvalidScriptEncoding)?;
-
-    if inputs.is_empty() {
-        // If the transaction is not encumbered by SAKE scripts at all,
-        // no need to validate it.
-        //
-        // This is useful in the case of slashable bonds, if the oracle
-        // key is used to sign other things than SAKE transactions, for
-        // example an Arcade script.
-        return Ok(());
-    }
-
-    // Step 2: Extract witness stacks from the last output if it's OP_RETURN
-
-    // Remove the witness carrier from the transaction..
-    // signatures and introspections will be based on the transaction
-    // after removing the witness carrier.
-    let last_output = tx.output.pop();
-
-    let witness_stacks = if let Some(last_output) = last_output {
-        last_output
-            .parse_witness_stacks()
-            .map_err(Error::InvalidWitnessCarriers)?
-    } else {
-        vec![]
-    };
-
-    // Step 3: Validate count
-    if witness_stacks.len() != inputs.len() {
-        return Err(Error::WitnessCountMismatch {
-            expected: inputs.len(),
-            found: witness_stacks.len(),
-        });
-    }
-
-    // SighashCache from the transaction without the witness stack.
-    //
-    // This is because the witness stack may include an introspection of
-    // transaction outputs and expects a specific number of outputs and
-    // or script pubkeys that wouldn't match after adding the witness carrier
-    let mut sighashcache = SighashCache::new(tx.clone());
-
-    // Initialize CCV transaction-wide state (BIP-443)
-    let ccv_tx_state =
-        std::cell::RefCell::new(crate::exec::op_ccv::CCVTxState::new(tx.output.len()));
-
-    // Step 4: Execute each input script with its witness
-    for ((input_idx, script), (witness_index, witness_stack)) in inputs.iter().zip(witness_stacks) {
-        if *input_idx != witness_index {
-            return Err(Error::WitnessIndexesMismatch {
-                expected: witness_index,
-                found: *input_idx,
-            });
-        }
-
-        let mut exec = Exec::new_with_ccv(
-            &mut sighashcache,
-            prevouts,
-            *input_idx,
-            script,
-            witness_stack,
-            &ccv_tx_state,
-        )?;
-
-        loop {
-            match exec.exec_next() {
-                Ok(_) => continue,
-                Err(exec::ExecError::NoMoreInstructions { success: true }) => break,
-                Err(exec::ExecError::NoMoreInstructions { success: false }) => {
-                    return Err(Error::ScriptVerificationFailed {
-                        input: *input_idx,
-                        final_stack: exec.stack,
-                    });
-                }
-                Err(err) => {
-                    // Return execution error
-                    return Err(Error::Exec(err));
-                }
+fn run_exec(exec: &mut Exec, input: usize) -> Result<(), Error> {
+    loop {
+        match exec.exec_next() {
+            Ok(()) => {}
+            Err(exec::ExecError::NoMoreInstructions { success: true }) => return Ok(()),
+            Err(exec::ExecError::NoMoreInstructions { success: false }) => {
+                return Err(Error::ScriptVerificationFailed {
+                    input,
+                    final_stack: exec.stack.clone(),
+                });
             }
+            Err(err) => return Err(Error::Exec(err)),
         }
     }
+}
 
+fn verify_control_block(
+    secp: &Secp256k1<All>,
+    prevout: &TxOut,
+    script: &Script,
+    control_block: &ControlBlock,
+    input: usize,
+) -> Result<(), Error> {
+    if control_block.leaf_version != LeafVersion::TapScript {
+        return Err(Error::UnsupportedLeafVersion { input });
+    }
+    if !prevout.script_pubkey.is_p2tr() {
+        return Err(Error::NotP2trPrevout { input });
+    }
+    let output_key_bytes = prevout
+        .script_pubkey
+        .as_bytes()
+        .get(2..34)
+        .ok_or(Error::NotP2trPrevout { input })?;
+    let output_key = XOnlyPublicKey::from_slice(output_key_bytes)
+        .map_err(|_| Error::NotP2trPrevout { input })?;
+    if !control_block.verify_taproot_commitment(secp, output_key, script) {
+        return Err(Error::ControlBlockMismatch { input });
+    }
     Ok(())
+}
+
+fn current_spend_info(
+    script: &Script,
+    control_block: &ControlBlock,
+) -> (XOnlyPublicKey, TapNodeHash) {
+    let mut root = TapNodeHash::from_script(script, LeafVersion::TapScript);
+    for node in control_block.merkle_branch.as_slice() {
+        root = TapNodeHash::from_node_hashes(root, *node);
+    }
+    (control_block.internal_key, root)
 }
 
 #[cfg(test)]
@@ -242,24 +409,28 @@ mod tests {
     use std::str::FromStr;
 
     use bitcoin::{
-        Amount, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness, XOnlyPublicKey,
-        hashes::Hash,
+        Amount, ScriptBuf, Sequence, TapLeafHash, TapSighashType, Transaction, TxIn, TxOut,
+        Witness, XOnlyPublicKey,
         key::{Keypair, Secp256k1},
         opcodes::all::{OP_PUSHNUM_6, OP_PUSHNUM_7, OP_PUSHNUM_8, OP_PUSHNUM_16},
-        secp256k1::{self, All, Message},
+        secp256k1::{self, All},
         sighash::{Prevouts, SighashCache},
+        taproot::{LeafVersion, TaprootBuilder},
     };
 
     use bitcoin_script::{define_pushable, script};
 
     define_pushable!();
 
-    use crate::{EncodeSakeScript, Error, SakeWitnessCarrier, validate, validate_and_sign};
+    use crate::{
+        EncodeSakeScript, Error, OP_CHECKCONTRACTVERIFY, SakeInput, SakeWitnessCarrier, validate,
+        validate_and_sign,
+    };
 
     pub fn dummy_tx() -> (Transaction, Vec<TxOut>) {
         let dummy_tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::absolute::LockTime::ZERO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
             input: vec![
                 TxIn {
                     previous_output:
@@ -277,14 +448,7 @@ mod tests {
                             .unwrap(),
                     script_sig: ScriptBuf::new(),
                     sequence: Sequence::from_consensus(3),
-                    witness: {
-                        // p2wsh annex-like stack element
-                        let mut buf = Witness::new();
-                        buf.push(vec![0x13]);
-                        buf.push(vec![0x14]);
-                        buf.push(vec![0x50, 0x42]); // annex
-                        buf
-                    },
+                    witness: Witness::new(),
                 },
                 TxIn {
                     previous_output:
@@ -293,11 +457,7 @@ mod tests {
                             .unwrap(),
                     script_sig: ScriptBuf::new(),
                     sequence: Sequence::from_consensus(2),
-                    witness: {
-                        let mut buf = Witness::new();
-                        buf.push(vec![0x12]);
-                        buf
-                    },
+                    witness: Witness::new(),
                 },
                 TxIn {
                     previous_output:
@@ -306,13 +466,7 @@ mod tests {
                             .unwrap(),
                     script_sig: ScriptBuf::new(),
                     sequence: Sequence::from_consensus(3),
-                    witness: {
-                        let mut buf = Witness::new();
-                        buf.push(vec![0x13]);
-                        buf.push(vec![0x14]);
-                        buf.push(vec![0x50, 0x42]); // annex
-                        buf
-                    },
+                    witness: Witness::new(),
                 },
             ],
             output: vec![
@@ -381,7 +535,7 @@ mod tests {
         emulated_script: ScriptBuf,
         witness: Vec<Vec<u8>>,
     ) -> Result<(), Error> {
-        let (dummy_tx, prevouts) = dummy_tx_with_witness_carrier(witness);
+        let (dummy_tx, prevouts) = dummy_tx_with_witness_carrier(witness.clone());
 
         let script = script! {
             {
@@ -389,12 +543,12 @@ mod tests {
                     &[
                         XOnlyPublicKey::from_str("18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166").unwrap()
                     ],
-                    0
+                    1
                 ).unwrap()
             }
         };
 
-        validate(&dummy_tx, &prevouts, &[(0, script)])
+        validate(&dummy_tx, &prevouts, &[SakeInput::new(0, script)])
     }
 
     /// Returns (pk, msg, sig) bytes
@@ -404,7 +558,7 @@ mod tests {
         let keypair = secp256k1::Keypair::new(secp, &mut rng);
         let pk = keypair.x_only_public_key().0;
 
-        // BIP 348 requires a 32-byte message for the current BIP 340 implementation
+        // BIP 340 requires a 32-byte message for the current secp256k1 binding
         let msg_bytes = [0x42u8; 32];
         let msg = secp256k1::Message::from_digest_slice(&msg_bytes).unwrap();
         let sig = secp.sign_schnorr(&msg, &keypair);
@@ -412,285 +566,316 @@ mod tests {
         (pk, msg_bytes, sig.serialize())
     }
 
-    #[test]
-    fn test_validate_and_sign_success() {
-        // Sign the first and last inputs
-        let scripts = vec![
-            // Input 0: Script that passes if witness is 1
-            (0, script! { OP_IF { 1 } OP_ELSE { 0 } OP_ENDIF }),
-            // Input 2: Script that passes if witness is 0
-            (2, script! { OP_IF { 0 } OP_ELSE { 1 } OP_ENDIF }),
-        ];
-
-        // Witness stacks encoded in witness carrier
-        let witness_carrier = TxOut::sake_witness_carrier(&[
-            (0, vec![vec![1]]), // Ipnut 0 witness stack: [ OP_1 ]
-            (2, vec![vec![]]),  // Ipnut 2 witness stack: [ OP_0 ]
-        ]);
-
-        // MUST have at least 2 inputs because we are signing input 0 and 1
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default(), Default::default(), Default::default()],
-            output: vec![witness_carrier],
-        };
-
+    fn oracle_keypair() -> (Secp256k1<All>, Keypair, XOnlyPublicKey) {
         let secp = Secp256k1::new();
-
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let public_key = keypair.x_only_public_key().0;
-
-        let prevouts = vec![
-            TxOut {
-                value: Amount::from_sat(1000),
-                script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
-            },
-            TxOut {
-                value: Amount::from_sat(1000),
-                script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
-            },
-            TxOut {
-                value: Amount::from_sat(1000),
-                script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
-            },
-        ];
-
-        let sigs = validate_and_sign(&keypair, &tx, &prevouts, &scripts)
-            .expect("Validation and signing failed");
-
-        assert_eq!(sigs.len(), 2);
-
-        // Manually verify the signatures against the sighashes to ensure they are valid BIP-340 sigs
-        let mut cache = SighashCache::new(&tx);
-        let prevouts_all = Prevouts::All(&prevouts);
-
-        for (i, (input_idx, _)) in scripts.iter().enumerate() {
-            let sighash = cache
-                .taproot_key_spend_signature_hash(
-                    *input_idx,
-                    &prevouts_all,
-                    bitcoin::TapSighashType::All,
-                )
-                .unwrap();
-
-            let msg = Message::from_digest(sighash.to_byte_array());
-
-            // Verify using secp
-            secp.verify_schnorr(&sigs[i], &msg, &public_key)
-                .expect("Signature verification failed");
-        }
+        let keypair = Keypair::from_seckey_slice(&secp, &[0x42; 32]).unwrap();
+        let pk = keypair.x_only_public_key().0;
+        (secp, keypair, pk)
     }
 
-    #[test]
-    fn test_validate_large_script() {
-        // Create a large SAKE script programmatically (100KB)
-        // by repeating OP_16 OP_DROP pairs many times, then ending with 1
-        // This tests that the validation pipeline handles large encoded scripts correctly
-        let mut script_bytes = Vec::new();
-
-        // Each iteration adds: OP_16 (1 byte) + OP_DROP (1 byte) = 2 bytes
-        // We want ~100KB, so ~50,000 iterations
-        for _ in 0..50000 {
-            script_bytes.push(0x60u8); // OP_16 pushes 16 to the stack
-            script_bytes.push(0x75u8); // OP_DROP removes the top stack item
-        }
-        script_bytes.push(0x51u8); // OP_1 pushes 1 to the stack (final result)
-
-        let large_script = ScriptBuf::from_bytes(script_bytes);
-
-        // Verify the script is large enough (>50KB)
-        assert!(
-            large_script.as_bytes().len() > 50000,
-            "Script should be >50KB, got {} bytes",
-            large_script.as_bytes().len()
-        );
-
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let public_key = keypair.x_only_public_key().0;
-
-        // Encode the large script
-        let encoded_script = large_script
-            .encode_sake_script(&[public_key], 1)
-            .expect("Should encode large script successfully");
-
-        // Create a transaction with witness carrier for the large script
-        // No witness data needed since the script is self-contained
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
-
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![witness_carrier],
-        };
-
-        let prevouts = vec![TxOut {
-            value: Amount::from_sat(1000),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
-        }];
-
-        // Validate the transaction with the large script
-        // This tests that the validation pipeline handles large encoded scripts correctly
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            result.is_ok(),
-            "Transaction with large script should validate successfully: {:?}",
-            result.err()
-        );
-    }
-
-    #[test]
-    fn test_validate_large_witness_carrier() {
-        // Test validation with large witness data in the carrier
-        // Create witness data larger than 520 bytes to test chunking
-        let large_witness_element = vec![0x42u8; 600]; // 600 bytes > 520 byte push limit
-        let large_witness_stack = vec![large_witness_element.clone()];
-
-        // Script that checks the witness data size
-        let script = script! {
-            // Get size of top element, compare to 600, then drop the element
-            OP_SIZE
-            600 OP_EQUALVERIFY
-            OP_DROP
-            1
-        };
-
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let public_key = keypair.x_only_public_key().0;
-
-        // Encode the script
-        let encoded_script = script
-            .encode_sake_script(&[public_key], 1)
-            .expect("Should encode script successfully");
-
-        // Create witness carrier with large witness data (>520 bytes)
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, large_witness_stack.clone())]);
-
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![witness_carrier],
-        };
-
-        let prevouts = vec![TxOut {
-            value: Amount::from_sat(1000),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
-        }];
-
-        // Validate the transaction with large witness carrier
-        let result = validate(&tx, &prevouts, &[(0, encoded_script)]);
-        assert!(
-            result.is_ok(),
-            "Transaction with large witness carrier should validate successfully: {:?}",
-            result.err()
-        );
-
-        // Also test with multiple large witness elements
-        let multiple_large_elements = vec![vec![0xAAu8; 400], vec![0xBBu8; 400], vec![0xCCu8; 400]];
-
-        // Script for multiple elements
-        // Witness stack: [element1, element2, element3] (element3 on top)
-        let multi_script = script! {
-            // Check third element size (400) - on top
-            OP_SIZE
-            400 OP_EQUALVERIFY
-            OP_DROP
-            // Check second element size (400)
-            OP_SIZE
-            400 OP_EQUALVERIFY
-            OP_DROP
-            // Check first element size (400)
-            OP_SIZE
-            400 OP_EQUALVERIFY
-            OP_DROP
-            1
-        };
-
-        let encoded_multi_script = multi_script
-            .encode_sake_script(&[public_key], 1)
-            .expect("Should encode multi script successfully");
-
-        let multi_witness_carrier = TxOut::sake_witness_carrier(&[(0, multiple_large_elements)]);
-
-        let multi_tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![multi_witness_carrier],
-        };
-
-        let result_multi = validate(&multi_tx, &prevouts, &[(0, encoded_multi_script)]);
-        assert!(
-            result_multi.is_ok(),
-            "Transaction with multiple large witness elements should validate successfully: {:?}",
-            result_multi.err()
-        );
-    }
-
-    #[test]
-    fn test_validate_with_no_sake_scripts() {
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let public_key = keypair.x_only_public_key().0;
-
-        let non_sake_script = script! { OP_DROP OP_FALSE };
-
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![vec![]])]);
-
-        let tx = Transaction {
-            version: bitcoin::transaction::Version::TWO,
-            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
-            input: vec![Default::default()],
-            output: vec![witness_carrier],
-        };
-
-        let prevouts = vec![TxOut {
-            value: Amount::from_sat(1000),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
-        }];
-
-        let result = validate(&tx, &prevouts, &[(0, non_sake_script)]);
-        assert!(
-            result.is_ok(),
-            "Transaction without SAKE scripts should validate successfully: {:?}",
-            result.err()
-        );
-    }
-
-    #[test]
-    fn test_validate_with_no_sake_scripts_nor_witness_carrier() {
-        let secp = Secp256k1::new();
-        let secret_key = [0x42; 32];
-        let keypair = Keypair::from_seckey_slice(&secp, &secret_key).unwrap();
-        let public_key = keypair.x_only_public_key().0;
-
-        let non_sake_script = script! { OP_FALSE };
-
+    fn single_input_tx(script: ScriptBuf) -> (Transaction, Vec<TxOut>) {
         let tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
             input: vec![Default::default()],
             output: vec![],
         };
-
         let prevouts = vec![TxOut {
             value: Amount::from_sat(1000),
-            script_pubkey: ScriptBuf::new_p2tr(&secp, public_key, None),
+            script_pubkey: script,
         }];
+        (tx, prevouts)
+    }
 
-        let result = validate(&tx, &prevouts, &[(0, non_sake_script)]);
+    #[test]
+    fn test_validate_and_sign_uses_script_spend_sighash() {
+        let (secp, keypair, pk) = oracle_keypair();
+        let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
+        tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
+
+        let native = script! { OP_1 }.encode_sake_script(&[pk], 1).unwrap();
+        let signatures = validate_and_sign(
+            &keypair,
+            &tx,
+            &prevouts,
+            &[SakeInput::new(0, native.clone())],
+        )
+        .unwrap();
+
+        let mut cache = SighashCache::new(&tx);
+        let leaf_hash = TapLeafHash::from_script(&native, LeafVersion::TapScript);
+        let script_sighash = cache
+            .taproot_script_spend_signature_hash(
+                0,
+                &Prevouts::All(&prevouts),
+                leaf_hash,
+                TapSighashType::Default,
+            )
+            .unwrap();
+        let key_sighash = cache
+            .taproot_key_spend_signature_hash(0, &Prevouts::All(&prevouts), TapSighashType::Default)
+            .unwrap();
+
+        assert_eq!(signatures[0].0, 0);
+        secp.verify_schnorr(&signatures[0].1, &script_sighash.into(), &pk)
+            .expect("signature must verify for the script spend sighash");
         assert!(
-            result.is_ok(),
-            "Transaction without SAKE scripts should validate successfully: {:?}",
-            result.err()
+            secp.verify_schnorr(&signatures[0].1, &key_sighash.into(), &pk)
+                .is_err(),
+            "signature must not be a key spend signature"
         );
+        assert_eq!(signatures[0].1.as_ref().len(), 64);
+    }
+
+    #[test]
+    fn test_validate_and_sign_rejects_invalid_sake_script() {
+        let (_secp, keypair, pk) = oracle_keypair();
+        let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
+        tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
+
+        let native = script! { OP_0 }.encode_sake_script(&[pk], 1).unwrap();
+        let result = validate_and_sign(&keypair, &tx, &prevouts, &[SakeInput::new(0, native)]);
+        assert!(matches!(
+            result,
+            Err(Error::ScriptVerificationFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn test_validate_large_script_uses_chunked_encoding() {
+        // 100KB of OP_16 OP_DROP pairs, ending with OP_1.
+        let mut script_bytes = Vec::new();
+        for _ in 0..50000 {
+            script_bytes.push(0x60u8);
+            script_bytes.push(0x75u8);
+        }
+        script_bytes.push(0x51u8);
+        let large_script = ScriptBuf::from_bytes(script_bytes);
+
+        let (_secp, _keypair, pk) = oracle_keypair();
+        let encoded = large_script
+            .clone()
+            .encode_sake_script(&[pk], 1)
+            .expect("chunked encoding should succeed");
+
+        // Every push in the native script must respect the 520 byte limit.
+        for instruction in encoded.instructions() {
+            if let bitcoin::script::Instruction::PushBytes(bytes) = instruction.unwrap() {
+                assert!(bytes.len() <= 520, "push of {} bytes", bytes.len());
+            }
+        }
+
+        let decoded = crate::script_encoding::extract_encoded_script(&encoded)
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded, large_script);
+
+        let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
+        tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
+        assert!(validate(&tx, &prevouts, &[SakeInput::new(0, encoded)]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_witness_element_over_520() {
+        let (_secp, _keypair, pk) = oracle_keypair();
+        let emulated = script! {
+            OP_SIZE
+            600 OP_EQUALVERIFY
+            OP_DROP
+            1
+        };
+        let encoded = emulated.encode_sake_script(&[pk], 1).unwrap();
+        let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
+        tx.output
+            .push(TxOut::sake_witness_carrier(&[(0, vec![vec![0x42u8; 600]])]));
+
+        let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded)]);
+        assert!(matches!(result, Err(Error::InvalidWitnessCarriers(_))));
+    }
+
+    #[test]
+    fn test_validate_accepts_520_byte_witness_element() {
+        let (_secp, _keypair, pk) = oracle_keypair();
+        let emulated = script! {
+            OP_SIZE
+            520 OP_EQUALVERIFY
+            OP_DROP
+            1
+        };
+        let encoded = emulated.encode_sake_script(&[pk], 1).unwrap();
+        let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
+        tx.output
+            .push(TxOut::sake_witness_carrier(&[(0, vec![vec![0x42u8; 520]])]));
+
+        assert!(validate(&tx, &prevouts, &[SakeInput::new(0, encoded)]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_multiple_witness_elements() {
+        let (_secp, _keypair, pk) = oracle_keypair();
+        let emulated = script! {
+            OP_SIZE 400 OP_EQUALVERIFY OP_DROP
+            OP_SIZE 400 OP_EQUALVERIFY OP_DROP
+            OP_SIZE 400 OP_EQUALVERIFY OP_DROP
+            1
+        };
+        let encoded = emulated.encode_sake_script(&[pk], 1).unwrap();
+        let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
+        tx.output.push(TxOut::sake_witness_carrier(&[(
+            0,
+            vec![vec![0xAAu8; 400], vec![0xBBu8; 400], vec![0xCCu8; 400]],
+        )]));
+
+        assert!(validate(&tx, &prevouts, &[SakeInput::new(0, encoded)]).is_ok());
+    }
+
+    #[test]
+    fn test_control_block_commitment() {
+        let (secp, _keypair, pk) = oracle_keypair();
+        let internal_key = XOnlyPublicKey::from_str(
+            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
+        )
+        .unwrap();
+        let encoded = script! { OP_1 }.encode_sake_script(&[pk], 1).unwrap();
+        let spend_info = TaprootBuilder::new()
+            .add_leaf(0, encoded.clone())
+            .unwrap()
+            .finalize(&secp, internal_key)
+            .unwrap();
+        let control_block = spend_info
+            .control_block(&(encoded.clone(), LeafVersion::TapScript))
+            .unwrap();
+        let prevout = TxOut {
+            value: Amount::from_sat(1000),
+            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, spend_info.merkle_root()),
+        };
+        let mut tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![],
+        };
+        tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
+
+        let input = SakeInput {
+            input_index: 0,
+            script: encoded.clone(),
+            control_block: Some(control_block.clone()),
+            spend_info: None,
+        };
+        assert!(
+            validate(
+                &tx,
+                std::slice::from_ref(&prevout),
+                std::slice::from_ref(&input)
+            )
+            .is_ok()
+        );
+
+        let tampered = SakeInput {
+            input_index: 0,
+            script: script! { OP_0 }.encode_sake_script(&[pk], 1).unwrap(),
+            control_block: Some(control_block.clone()),
+            spend_info: None,
+        };
+        assert!(matches!(
+            validate(&tx, &[prevout], &[tampered]),
+            Err(Error::ControlBlockMismatch { .. })
+        ));
+
+        // from_witness round-trip
+        let mut witness = Witness::new();
+        witness.push(encoded.as_bytes());
+        witness.push(control_block.serialize());
+        let parsed = SakeInput::from_witness(0, &witness).unwrap();
+        assert_eq!(parsed.script, encoded);
+        assert_eq!(parsed.control_block, Some(control_block));
+    }
+
+    #[test]
+    fn test_ccv_minus_one_with_control_block() {
+        let (secp, _keypair, oracle_pk) = oracle_keypair();
+        let internal_key = XOnlyPublicKey::from_str(
+            "18845781f631c48f1c9709e23092067d06837f30aa0cd0544ac887fe91ddd166",
+        )
+        .unwrap();
+
+        // <data=data> <index=-1> <pk=-1> <taptree=-1> <mode=CHECK_INPUT>
+        let emulated = script! {
+            OP_0
+            <-1>
+            <-1>
+            <-1>
+            <-1>
+            OP_CHECKCONTRACTVERIFY
+            OP_1
+        };
+        let encoded = emulated.encode_sake_script(&[oracle_pk], 1).unwrap();
+
+        let spend_info = TaprootBuilder::new()
+            .add_leaf(0, encoded.clone())
+            .unwrap()
+            .finalize(&secp, internal_key)
+            .unwrap();
+        let control_block = spend_info
+            .control_block(&(encoded.clone(), LeafVersion::TapScript))
+            .unwrap();
+        let prevout = TxOut {
+            value: Amount::from_sat(1000),
+            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, spend_info.merkle_root()),
+        };
+        let mut tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![],
+        };
+        tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
+
+        let input = SakeInput {
+            input_index: 0,
+            script: encoded,
+            control_block: Some(control_block),
+            spend_info: None,
+        };
+        assert!(validate(&tx, &[prevout], &[input]).is_ok());
+    }
+
+    #[test]
+    fn test_prevouts_count_mismatch() {
+        let (_secp, _keypair, _pk) = oracle_keypair();
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![Default::default()],
+            output: vec![],
+        };
+        let input = SakeInput::new(0, script! { OP_1 });
+        assert!(matches!(
+            validate(&tx, &[], &[input]),
+            Err(Error::PrevoutsCountMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn test_invalid_input_index() {
+        let (tx, prevouts) = single_input_tx(ScriptBuf::new());
+        let input = SakeInput::new(9, script! { OP_1 });
+        assert!(matches!(
+            validate(&tx, &prevouts, &[input]),
+            Err(Error::InvalidInputIndex { .. })
+        ));
+    }
+
+    #[test]
+    fn test_annex_is_rejected() {
+        let mut witness = Witness::new();
+        witness.push(vec![]); // stack
+        witness.push(vec![0x51]); // script
+        witness.push(vec![0x50, 0x42]); // annex-like last element
+        assert!(matches!(
+            SakeInput::from_witness(0, &witness),
+            Err(Error::AnnexNotSupported { .. })
+        ));
     }
 }

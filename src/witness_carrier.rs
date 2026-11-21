@@ -8,6 +8,10 @@ use std::io::{Cursor, Read}; // Added necessary imports
 
 const PREFIX: &[u8] = b"SAKE";
 pub(crate) const MAX_SUPPORTED_VERSION_VERSION: u8 = 0;
+/// BIP-342 initial stack element limit.
+const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
+/// BIP-342 initial stack element count limit.
+const MAX_STACK_SIZE: usize = 1000;
 
 pub trait SakeWitnessCarrier {
     fn sake_witness_carrier(stacks: &[(usize, Vec<Vec<u8>>)]) -> TxOut;
@@ -105,6 +109,9 @@ impl SakeWitnessCarrier for TxOut {
                 Ok(v) => v.0 as usize,
                 Err(_) => return Err(WitnessCarrierError::InvalidElementsCount),
             };
+            if n > MAX_STACK_SIZE {
+                return Err(WitnessCarrierError::TooManyElements);
+            }
 
             let mut stack = Vec::with_capacity(n);
 
@@ -113,6 +120,10 @@ impl SakeWitnessCarrier for TxOut {
                     Ok(v) => v.0 as usize,
                     Err(_) => return Err(WitnessCarrierError::InvalidElement),
                 };
+                let remaining = payload.len().saturating_sub(cursor.position() as usize);
+                if element_len > MAX_SCRIPT_ELEMENT_SIZE || element_len > remaining {
+                    return Err(WitnessCarrierError::InvalidElement);
+                }
 
                 let mut element = vec![0u8; element_len];
                 if cursor.read_exact(&mut element).is_err() {
@@ -135,10 +146,10 @@ pub enum WitnessCarrierError {
     MissingPrefix,
     MissingVersion,
     UnsupportedVersion,
-    InvalidStacksCount,
     InvalidInputIndex,
     InvalidElementsCount,
     InvalidElement,
+    TooManyElements,
 }
 
 #[cfg(test)]
@@ -151,7 +162,7 @@ mod test {
     prop_compose! {
         // Generate a single byte vector (the innermost element)
         fn arb_element()(
-            len in 0..=4069usize,
+            len in 0..=520usize,
             bytes: Vec<u8>,
         ) -> Vec<u8> {
             bytes.into_iter().take(len).collect()

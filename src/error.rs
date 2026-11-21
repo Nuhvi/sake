@@ -1,4 +1,6 @@
-use bitcoin::{blockdata::script, sighash::TaprootError};
+use bitcoin::{
+    blockdata::script, sighash::TaprootError, taproot::TaprootError as TaprootControlBlockError,
+};
 
 use crate::{OpAmountError, exec::Stack, script_encoding, witness_carrier::WitnessCarrierError};
 
@@ -8,14 +10,10 @@ use crate::{OpAmountError, exec::Stack, script_encoding, witness_carrier::Witnes
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecError {
     DisabledOpcode,
-    OpCodeseparator,
     BadOpcode,
-    OpCount,
     PushSize,
     MinimalData,
     InvalidStackOperation,
-    NegativeLocktime,
-    UnsatisfiedLocktime,
     UnbalancedConditional,
     TapscriptMinimalIf,
     Verify,
@@ -29,15 +27,15 @@ pub enum ExecError {
     SchnorrSigHashtype,
     SchnorrSig,
     TapscriptCheckMultiSig,
-    PubkeyCount,
     StackSize,
-    WitnessPubkeyType,
 
     // new ones for us
     ScriptIntNumericOverflow,
     Debug,
 
-    NoMoreInstructions { success: bool },
+    NoMoreInstructions {
+        success: bool,
+    },
 
     OpAmountError(OpAmountError),
 
@@ -45,9 +43,14 @@ pub enum ExecError {
     InvalidCCVIndex,
     InvalidCCVTaptree,
     InvalidCCVPubkey,
+    MissingCurrentInputSpendInfo,
     CCVScriptMismatch,
     CCVAmountConflict,
     CCVInsufficientAmount,
+
+    /// The taproot signature hash could not be computed (for example because
+    /// the prevouts do not match the transaction inputs).
+    Sighash(TaprootError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,14 +60,8 @@ pub enum Error {
     /// A script failed to parse or was malformed.
     InvalidScript(script::Error),
 
-    /// Number of witness stacks does not match number of SAKE inputs.
-    WitnessCountMismatch { expected: usize, found: usize },
-    /// Provided scripts don't have the same input indexes as in the witness carrier
-    WitnessIndexesMismatch { expected: usize, found: usize },
     /// The last output does not follow the expected SAKE witness OP_RETURN format.
     InvalidWitnessCarriers(WitnessCarrierError),
-    /// A witness stack was encoded in an invalid or corrupt format.
-    InvalidWitnessEncoding,
 
     /// Invalid encoding of SAKE script in tapscript with push bytes
     InvalidScriptEncoding(script_encoding::ScriptDecodingError),
@@ -77,4 +74,27 @@ pub enum Error {
 
     /// No Inputs to validate
     NoInputs,
+
+    /// Number of prevouts does not match the number of transaction inputs.
+    PrevoutsCountMismatch { expected: usize, found: usize },
+    /// An input index is out of bounds for the transaction.
+    InvalidInputIndex { input: usize, count: usize },
+    /// The taproot script/control block witness is missing or too short.
+    InvalidWitness { input: usize },
+    /// Taproot annex is not supported by SAKE.
+    AnnexNotSupported { input: usize },
+    /// Only tapscript (0xc0) leaf version is supported.
+    UnsupportedLeafVersion { input: usize },
+    /// The control block could not be decoded.
+    ControlBlock(TaprootControlBlockError),
+    /// The control block does not commit to the supplied script for this prevout.
+    ControlBlockMismatch { input: usize },
+    /// The spent output is not P2TR.
+    NotP2trPrevout { input: usize },
+    /// No witness stack was supplied in the carrier for a SAKE input.
+    MissingSakeWitness { input: usize },
+    /// The carrier contains more than one stack for the same input.
+    DuplicateSakeWitness { input: usize },
+    /// The carrier contains a stack for an input that is not a SAKE input.
+    UnexpectedSakeWitness { input: usize },
 }

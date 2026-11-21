@@ -20,18 +20,11 @@ pub fn scriptint_vec(n: i64) -> Vec<u8> {
 }
 
 impl StackEntry {
-    // This assumes the StackEntry fit in a u32 and will pad it with leading zeros to 4 bytes.
+    /// Returns the byte representation of this entry.
     pub fn as_bytes(&self) -> Vec<u8> {
         match self {
             StackEntry::Num(v) => scriptint_vec(*v),
-            StackEntry::StrRef(v) => {
-                let v = v.borrow().to_vec();
-                assert!(
-                    v.len() <= 4,
-                    "There should not be entries with more than 32 bits on the Stack at this point"
-                );
-                v
-            }
+            StackEntry::StrRef(v) => v.borrow().to_vec(),
         }
     }
 }
@@ -142,6 +135,10 @@ impl Stack {
 
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     pub fn remove(&mut self, v: usize) {
