@@ -210,7 +210,7 @@ use sake::{SakeInput, validate_and_sign};
 // with the script and control block as the last two elements. It rejects an
 // annex and extracts the control block, so `validate` can check the commitment.
 let witness = Witness::from_slice(&[
-    taproot_script.to_vec(),
+    taproot_script.to_bytes(),
     control_block.serialize(),
 ]);
 let input = SakeInput::from_witness(0, &witness)?;
@@ -292,10 +292,11 @@ let taproot_script = script! {
 };
 
 // Step 3: Prepare the emulation witness (in reverse stack order)
+// `signature` is a `schnorr::Signature`; `message` is a byte vector.
 let emulation_witness = vec![
-    signature.to_vec(),   // OP_CHECKSIGFROMSTACK signature
-    message.to_vec(),     // OP_CHECKSIGFROMSTACK message
-    <"hello ">,           // OP_CAT input
+    signature.serialize().to_vec(),   // OP_CHECKSIGFROMSTACK signature
+    message.to_vec(),                 // OP_CHECKSIGFROMSTACK message
+    <"hello ">,                       // OP_CAT input
 ];
 
 // Step 4: Create the spending transaction
@@ -313,7 +314,7 @@ spending_tx
 // Step 5: Send to oracles for validation
 // The input is built from the taproot witness: [stack..., script, control_block].
 let sake_witness = Witness::from_slice(&[
-    taproot_script.to_vec(),
+    taproot_script.to_bytes(),
     control_block.serialize(),
 ]);
 let sake_input = sake::SakeInput::from_witness(0, &sake_witness)?;
@@ -324,12 +325,12 @@ let signatures = sake::validate_and_sign(keypair, &spending_tx, &prevouts, &[sak
 // A 2-of-3 script has three CHECKSIG/CHECKSIGADD ops, so the witness
 // needs three signature slots. Use an empty element for a non-signer.
 let taproot_witness = Witness::from_slice(&[
-    vec![],                       // oracle 3 did not sign
-    oracle_2_signature.to_vec(),  // pk2 slot
-    oracle_1_signature.to_vec(),  // pk1 slot (top of the stack)
+    vec![],                                   // oracle 3 did not sign
+    oracle_2_signature.serialize().to_vec(),  // pk2 slot
+    oracle_1_signature.serialize().to_vec(),  // pk1 slot (top of the stack)
 
-    taproot_script.to_vec(),      // Script
-    control_block.serialize(),    // Control block
+    taproot_script.to_bytes(),                // Script
+    control_block.serialize(),                // Control block
 ]);
 
 spending_tx.input[0].witness = taproot_witness;
