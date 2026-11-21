@@ -195,7 +195,8 @@ let witness_carrier = TxOut::sake_witness_carrier(&[
         0, // Input index 
         vec![], // Witness stack (elements except for script, control block or annex)
     )
-]);
+])
+    .expect("valid SAKE witness carrier");
 tx.output.push(witness_carrier);
 ```
 
@@ -305,9 +306,9 @@ let mut spending_tx = Transaction {
 };
 
 // Add witness carrier as the last output
-spending_tx.output.push(
-    TxOut::sake_witness_carrier(&[(0, emulation_witness)])
-);
+spending_tx
+    .output
+    .push(TxOut::sake_witness_carrier(&[(0, emulation_witness)])?);
 
 // Step 5: Send to oracles for validation
 // The input is built from the taproot witness: [stack..., script, control_block].
@@ -637,3 +638,7 @@ A: The annex would be preferable place for this data, but annex-bearing transact
 
 This implementation is heavily based on [Steven Roose's BitVM/rust-bitcoin-scriptexec](https://github.com/BitVM/rust-bitcoin-scriptexec).
 The Script Army Knife proposal is by [Salvatore Ingala](https://salvatoshi.com/).
+
+## License
+
+Licensed under the [MIT License](LICENSE).

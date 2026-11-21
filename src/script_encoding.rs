@@ -4,14 +4,14 @@ use std::io::Cursor;
 
 use bitcoin::{
     ScriptBuf, VarInt, XOnlyPublicKey,
-    consensus::{Decodable, Encodable},
+    consensus::Decodable,
     opcodes::all::{OP_CHECKSIG, OP_CHECKSIGADD, OP_DROP, OP_GREATERTHANOREQUAL},
     script::{Instruction, PushBytesBuf, PushBytesError},
 };
 
 pub(crate) const PREFIX: &[u8; 4] = b"SAKE";
 /// Highest supported encoding version (0 = single push, 1 = chunked).
-pub(crate) const MAX_SUPPORTED_VERSION_VERSION: u8 = 1;
+pub(crate) const MAX_SUPPORTED_VERSION: u8 = 1;
 pub(crate) const VERSION_LEN: usize = 1;
 const VERSION_SINGLE_PUSH: u8 = 0;
 const VERSION_CHUNKED: u8 = 1;
@@ -23,6 +23,7 @@ const MAX_PUSH_SIZE: usize = 520;
 /// signature, so more than 1000 oracles can never be spent.
 pub const MAX_ORACLES: usize = 1000;
 
+/// Encodes an emulated script into a tapscript that SAKE oracles verify.
 pub trait EncodeSakeScript {
     /// - oracles: List of the emulation oracles' public keys in deterministic order.
     ///   The list is limited to [`MAX_ORACLES`] entries.
@@ -58,25 +59,19 @@ impl EncodeSakeScript for ScriptBuf {
 
         if PREFIX.len() + VERSION_LEN + self.len() <= MAX_PUSH_SIZE {
             // Version 0: the whole script fits in one push.
-            let mut bytes = PushBytesBuf::with_capacity(PREFIX.len() + VERSION_LEN + self.len());
-            bytes.extend_from_slice(PREFIX).expect("infallible");
-            bytes.push(VERSION_SINGLE_PUSH).expect("infallible");
-            bytes
-                .extend_from_slice(self.as_bytes())
-                .map_err(ScriptEncodingError::SizeLimit)?;
+            let mut payload = Vec::with_capacity(PREFIX.len() + VERSION_LEN + self.len());
+            payload.extend_from_slice(PREFIX);
+            payload.push(VERSION_SINGLE_PUSH);
+            payload.extend_from_slice(self.as_bytes());
+            let bytes = PushBytesBuf::try_from(payload).map_err(ScriptEncodingError::SizeLimit)?;
             builder = builder.push_slice(bytes).push_opcode(OP_DROP);
         } else {
             // Version 1: length header followed by <=520-byte chunks.
-            let mut header = PushBytesBuf::new();
-            header.extend_from_slice(PREFIX).expect("infallible");
-            header.push(VERSION_CHUNKED).expect("infallible");
-            let mut length = Vec::new();
-            VarInt(self.len() as u64)
-                .consensus_encode(&mut length)
-                .expect("writing to a Vec cannot fail");
-            header
-                .extend_from_slice(&length)
-                .map_err(ScriptEncodingError::SizeLimit)?;
+            let mut header = Vec::with_capacity(PREFIX.len() + VERSION_LEN + 9);
+            header.extend_from_slice(PREFIX);
+            header.push(VERSION_CHUNKED);
+            crate::varint::encode_vec(&mut header, self.len() as u64);
+            let header = PushBytesBuf::try_from(header).map_err(ScriptEncodingError::SizeLimit)?;
             builder = builder.push_slice(header).push_opcode(OP_DROP);
 
             for chunk in self.as_bytes().chunks(MAX_PUSH_SIZE) {
@@ -124,7 +119,7 @@ pub(crate) fn extract_encoded_script(
         let version = *bytes
             .get(PREFIX.len())
             .ok_or(ScriptDecodingError::MissingVersion)?;
-        if version > MAX_SUPPORTED_VERSION_VERSION {
+        if version > MAX_SUPPORTED_VERSION {
             return Err(ScriptDecodingError::UnsupportedVersion);
         }
         let payload_start = PREFIX.len() + VERSION_LEN;
@@ -187,6 +182,7 @@ pub(crate) fn extract_encoded_script(
     Ok(None)
 }
 
+/// Error when a script cannot be encoded for SAKE.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScriptEncodingError {
     /// SAKE script seems to be larger than the PushBytes size limit
@@ -203,6 +199,7 @@ pub enum ScriptEncodingError {
     InvalidThreshold,
 }
 
+/// Error when a tapscript has an invalid SAKE encoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScriptDecodingError {
     /// Input script contains multiple SAKE emulated scripts
@@ -250,7 +247,7 @@ mod tests {
             // So they have to happen before the OP_IF
             100 OP_CSV OP_DROP
 
-            // OP_PUSHBYTES_<len> b"SAKE"<MAX_SUPPORTED_VERSION_VERSION=0><Encoded Script> OP_DROP
+            // OP_PUSHBYTES_<len> b"SAKE"<MAX_SUPPORTED_VERSION=0><Encoded Script> OP_DROP
             // OP_PUSHBYTES_32 <Oracle 1 Pubkey> OP_CHECKSIG
             <sake_script.clone().encode_sake_script(&[pk], 1).unwrap()>
         };

@@ -1,21 +1,27 @@
 //! OP_TEMPLATEHASH [BIP-446](https://github.com/bitcoin/bips/pull/1974/changes#diff-1dc83010a8fe1e5e76261fa4dc2b5ada14da9f7f0dfe967c0b5049bf8542ac54)
 
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::consensus::Encodable;
 use bitcoin::hashes::{Hash, HashEngine, sha256};
 
 use bitcoin::opcodes::all::OP_RETURN_206;
-use bitcoin::{Opcode, ScriptBuf, VarInt};
+use bitcoin::{Opcode, ScriptBuf};
 
 use crate::exec::{Exec, ExecError};
 
-pub const OP_CODE: Opcode = OP_RETURN_206;
+pub(crate) const OP_CODE: Opcode = OP_RETURN_206;
 
+/// Returns the `OP_TEMPLATEHASH` opcode as a one-byte script.
 #[allow(non_snake_case)]
+#[must_use]
 pub fn OP_TEMPLATEHASH() -> ScriptBuf {
     ScriptBuf::from_bytes(vec![OP_CODE.to_u8()])
 }
+
+/// Returns the `OP_TH` opcode as a one-byte script.
+///
+/// This function is an alias for [`OP_TEMPLATEHASH`].
 #[allow(non_snake_case)]
+#[must_use]
 pub fn OP_TH() -> ScriptBuf {
     OP_TEMPLATEHASH()
 }
@@ -55,9 +61,7 @@ impl<'a> Exec<'a> {
 fn calculate_sha_sequences(tx: &Transaction) -> sha256::Hash {
     let mut engine = sha256::Hash::engine();
     for txin in tx.input.iter() {
-        txin.sequence
-            .consensus_encode(&mut engine)
-            .expect("writing to a hash engine cannot fail");
+        engine.input(&txin.sequence.to_consensus_u32().to_le_bytes());
     }
     sha256::Hash::from_engine(engine)
 }
@@ -65,9 +69,9 @@ fn calculate_sha_sequences(tx: &Transaction) -> sha256::Hash {
 fn calculate_sha_outputs(tx: &Transaction) -> sha256::Hash {
     let mut engine = sha256::Hash::engine();
     for txout in tx.output.iter() {
-        txout
-            .consensus_encode(&mut engine)
-            .expect("writing to a hash engine cannot fail");
+        engine.input(&txout.value.to_sat().to_le_bytes());
+        crate::varint::encode_engine(&mut engine, txout.script_pubkey.len() as u64);
+        engine.input(txout.script_pubkey.as_bytes());
     }
     sha256::Hash::from_engine(engine)
 }
@@ -94,7 +98,7 @@ fn calculate_template_hash(
     // 3. Data about this input
     let annex_present: u8 = if annex.is_some() { 1 } else { 0 };
     engine.input(&[annex_present]);
-    engine.input(&(input_index as u32).to_le_bytes());
+    engine.input(&u32::try_from(input_index).unwrap_or(u32::MAX).to_le_bytes());
 
     // 4. Optional Annex
     if let Some(annex_data) = annex {
@@ -102,9 +106,7 @@ fn calculate_template_hash(
         // length prefix. SAKE rejects annexes, so this branch is currently
         // unreachable; keep it correct for reuse.
         let mut annex_engine = sha256::Hash::engine();
-        VarInt(annex_data.len() as u64)
-            .consensus_encode(&mut annex_engine)
-            .expect("writing to a hash engine cannot fail");
+        crate::varint::encode_engine(&mut annex_engine, annex_data.len() as u64);
         annex_engine.input(annex_data);
         engine.input(sha256::Hash::from_engine(annex_engine).as_ref());
     }
@@ -115,7 +117,9 @@ fn calculate_template_hash(
 #[cfg(test)]
 mod tests {
 
-    use bitcoin::{ScriptBuf, TxOut, consensus::deserialize, sighash::SighashCache};
+    use bitcoin::{
+        ScriptBuf, TxOut, consensus::deserialize, key::Secp256k1, sighash::SighashCache,
+    };
     use serde::Deserialize;
 
     use bitcoin_script::{define_pushable, script};
@@ -187,7 +191,9 @@ mod tests {
 
             let mut sighashcache = SighashCache::new(tx);
 
+            let secp = Secp256k1::new();
             let mut exec = Exec::new(
+                &secp,
                 &mut sighashcache,
                 &prevouts,
                 tv.input_index,
@@ -213,7 +219,7 @@ mod tests {
     }
 
     #[derive(Deserialize, Debug, Clone)]
-    pub struct ScriptAssetsTestVector {
+    pub(crate) struct ScriptAssetsTestVector {
         #[serde(rename = "tx")]
         pub spending_tx: String,
         #[serde(rename = "prevouts")]
@@ -230,7 +236,7 @@ mod tests {
     }
 
     #[derive(Deserialize, Debug, Clone)]
-    pub struct WitnessData {
+    pub(crate) struct WitnessData {
         pub witness: Vec<String>,
     }
 
@@ -302,7 +308,9 @@ mod tests {
                 });
                 let witness_stack = witness[0..script_index].to_vec();
 
+                let secp = Secp256k1::new();
                 let mut exec = Exec::new(
+                    &secp,
                     &mut sighashcache,
                     &prevouts,
                     tv.input_index,
@@ -366,7 +374,9 @@ mod tests {
                 });
                 let witness_stack = witness[0..script_index].to_vec();
 
+                let secp = Secp256k1::new();
                 let mut exec = Exec::new(
+                    &secp,
                     &mut sighashcache,
                     &prevouts,
                     tv.input_index,

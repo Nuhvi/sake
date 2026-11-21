@@ -10,30 +10,50 @@ use crate::exec::{ExecError, read_scriptint};
 
 pub(crate) const OP_CODE: Opcode = OP_RETURN_187; // 0xbb
 
+/// Returns the `OP_CHECKCONTRACTVERIFY` opcode as a one-byte script.
 #[allow(non_snake_case)]
+#[must_use]
 pub fn OP_CHECKCONTRACTVERIFY() -> ScriptBuf {
     ScriptBuf::from_bytes(vec![OP_CODE.to_u8()])
 }
 
+/// Returns the `OP_CCV` opcode as a one-byte script.
+///
+/// This function is an alias for [`OP_CHECKCONTRACTVERIFY`].
 #[allow(non_snake_case)]
+#[must_use]
 pub fn OP_CCV() -> ScriptBuf {
     OP_CHECKCONTRACTVERIFY()
 }
 
-// BIP-341 NUMS key (unspendable)
+/// Returns true when `bytes` holds the minimal encoding of -1 (`0x81`).
+fn is_minimal_minus_one(bytes: &[u8]) -> bool {
+    bytes == [0x81]
+}
+
+/// The BIP-341 NUMS point, used as an unspendable internal key.
 pub const BIP341_NUMS_KEY: [u8; 32] = [
     0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60, 0x35, 0xe9, 0x7a, 0x5e,
     0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5, 0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80, 0x3a, 0xc0,
 ];
 
+/// The BIP-443 check mode.
+///
+/// BIP-443 uses the mode to select the target of a check and the amount
+/// semantic. Mode values outside the defined range keep the script
+/// forward-compatible: the opcode succeeds without a check.
 #[repr(i64)]
-// Mode enum from BIP-443
 #[derive(PartialEq, PartialOrd)]
 pub enum CCVMode {
+    /// Checks an input and its amount.
     CheckInput = -1,
+    /// Checks an output and its amount.
     CheckOutput = 0,
+    /// Checks an output script and ignores the amount.
     CheckOutputIgnoreAmount = 1,
+    /// Checks an output and deducts its amount from the input.
     CheckOutputDeductAmount = 2,
+    /// A mode value that BIP-443 does not define.
     Undefined = i64::MAX,
 }
 
@@ -49,15 +69,18 @@ impl From<i64> for CCVMode {
     }
 }
 
-/// Transaction-wide state for CCV amount tracking
+/// Transaction-wide state for CCV amount checks.
 pub(crate) struct CCVTxState {
-    pub output_min_amount: Vec<u64>,
-    pub output_checked_default: Vec<bool>,
-    pub output_checked_deduct: Vec<bool>,
+    /// Minimum amount that each output must hold.
+    pub(crate) output_min_amount: Vec<u64>,
+    /// True when a DEFAULT check used the output.
+    pub(crate) output_checked_default: Vec<bool>,
+    /// True when a DEDUCT check used the output.
+    pub(crate) output_checked_deduct: Vec<bool>,
 }
 
 impl CCVTxState {
-    pub fn new(n_outputs: usize) -> Self {
+    pub(crate) fn new(n_outputs: usize) -> Self {
         Self {
             output_min_amount: vec![0; n_outputs],
             output_checked_default: vec![false; n_outputs],
@@ -66,13 +89,14 @@ impl CCVTxState {
     }
 }
 
-/// Per-input state for CCV
-pub struct CCVInputState {
-    pub residual_input_amount: u64,
+/// Per-input state for CCV amount checks.
+pub(crate) struct CCVInputState {
+    /// Input amount that is not yet committed to an output.
+    pub(crate) residual_input_amount: u64,
 }
 
 impl CCVInputState {
-    pub fn new(input_amount: u64) -> Self {
+    pub(crate) fn new(input_amount: u64) -> Self {
         Self {
             residual_input_amount: input_amount,
         }
@@ -93,29 +117,29 @@ impl<'a> Exec<'a> {
 
         self.stack.needn(5)?;
 
-        let mode_bytes = self.stack.popstr()?;
+        let mode: CCVMode = mode_value.into();
+        // Pop the mode bytes. `mode_value` already holds the decoded value.
+        self.stack.popstr()?;
         let taptree = self.stack.popstr()?;
         let pk = self.stack.popstr()?;
         let index_bytes = self.stack.popstr()?;
         let data = self.stack.popstr()?;
-
-        let mode: CCVMode = read_scriptint(&mode_bytes, 4)?.into();
 
         // Decode index
         let mut index = read_scriptint(&index_bytes, 4)?;
 
         // Replace -1 with current input index
         if index == -1 {
-            index = self.input_idx as i64;
+            index = i64::try_from(self.input_idx).map_err(|_| ExecError::InvalidCCVIndex)?;
         }
 
         if index < 0 {
             return Err(ExecError::InvalidCCVIndex);
         }
+        let index = usize::try_from(index).map_err(|_| ExecError::InvalidCCVIndex)?;
 
         // Determine if checking input or output
         let (target_script, target_amount) = if mode == CCVMode::CheckInput {
-            let index = index as usize;
             let prevout = self.prevouts.get(index).ok_or(ExecError::InvalidCCVIndex)?;
             if index >= self.sighashcache.transaction().input.len() {
                 return Err(ExecError::InvalidCCVIndex);
@@ -123,15 +147,12 @@ impl<'a> Exec<'a> {
             (prevout.script_pubkey.to_bytes(), prevout.value.to_sat())
         } else {
             let tx = self.sighashcache.transaction();
-            let output = tx
-                .output
-                .get(index as usize)
-                .ok_or(ExecError::InvalidCCVIndex)?;
+            let output = tx.output.get(index).ok_or(ExecError::InvalidCCVIndex)?;
             (output.script_pubkey.to_bytes(), output.value.to_sat())
         };
 
         // Process taptree parameter
-        let taptree_hash = if self.is_minimal_minus_one(&taptree) {
+        let taptree_hash = if is_minimal_minus_one(&taptree) {
             // Use current input's taptree
             Some(self.current_input_taptree()?)
         } else if taptree.is_empty() {
@@ -146,7 +167,7 @@ impl<'a> Exec<'a> {
         let naked_key = if pk.is_empty() {
             // Empty buffer = NUMS key
             XOnlyPublicKey::from_slice(&BIP341_NUMS_KEY).map_err(|_| ExecError::InvalidCCVPubkey)?
-        } else if self.is_minimal_minus_one(&pk) {
+        } else if is_minimal_minus_one(&pk) {
             // -1 = current input's internal key
             self.current_input_internal_key()?
         } else if pk.len() == 32 {
@@ -160,7 +181,7 @@ impl<'a> Exec<'a> {
             self.compute_ccv_internal_key(&naked_key, &data, taptree_hash.as_ref())?;
 
         // Verify target script matches expected P2TR
-        let expected_script = self.make_p2tr_script(&internal_key)?;
+        let expected_script = Self::make_p2tr_script(&internal_key);
         if target_script != expected_script {
             return Err(ExecError::CCVScriptMismatch);
         }
@@ -169,11 +190,11 @@ impl<'a> Exec<'a> {
         match mode {
             CCVMode::CheckOutput => {
                 // Default: preserve residual amount
-                self.ccv_check_output_default(index as usize, target_amount)?;
+                self.ccv_check_output_default(index, target_amount)?;
             }
             CCVMode::CheckOutputDeductAmount => {
                 // Deduct: subtract output amount from residual
-                self.ccv_check_output_deduct(index as usize, target_amount)?;
+                self.ccv_check_output_deduct(index, target_amount)?;
             }
             CCVMode::CheckOutputIgnoreAmount => {
                 // Ignore amount: verify script only, no amount checks
@@ -183,8 +204,8 @@ impl<'a> Exec<'a> {
                 // Input mode: no amount checks needed
             }
             CCVMode::Undefined => {
-                // Undefined modes are handled earlier.
-                unreachable!("undefined CCV mode handled at the top")
+                // The mode range check above rejects this value.
+                return Err(ExecError::InvalidCCVIndex);
             }
         }
 
@@ -203,7 +224,7 @@ impl<'a> Exec<'a> {
 
         // Apply data tweak if data is non-empty
         if !data.is_empty() {
-            let data_tweak = self.compute_data_tweak(naked_key, data)?;
+            let data_tweak = Self::compute_data_tweak(naked_key, data);
             current_key = self.tweak_pubkey(&current_key, &data_tweak)?;
         }
 
@@ -216,13 +237,12 @@ impl<'a> Exec<'a> {
     }
 
     /// Compute data tweak: SHA256(pk || data)
-    fn compute_data_tweak(&self, pk: &XOnlyPublicKey, data: &[u8]) -> Result<[u8; 32], ExecError> {
+    fn compute_data_tweak(pk: &XOnlyPublicKey, data: &[u8]) -> [u8; 32] {
         let mut preimage = Vec::with_capacity(32 + data.len());
         preimage.extend_from_slice(&pk.serialize());
         preimage.extend_from_slice(data);
 
-        let hash = sha256::Hash::hash(&preimage);
-        Ok(hash.to_byte_array())
+        sha256::Hash::hash(&preimage).to_byte_array()
     }
 
     /// Tweak a public key with a 32-byte tweak using point addition
@@ -247,7 +267,7 @@ impl<'a> Exec<'a> {
 
         // T * G - reuse the executor's signing context instead of creating
         // one for every OP_CHECKCONTRACTVERIFY evaluation.
-        let tweak_point = PublicKey::from_secret_key(&self.secp_sign, &tweak_scalar);
+        let tweak_point = PublicKey::from_secret_key(self.secp, &tweak_scalar);
 
         // Compute Q = P + T (point addition)
         let tweaked = full_pk
@@ -255,9 +275,7 @@ impl<'a> Exec<'a> {
             .map_err(|_| ExecError::SchnorrSig)?;
 
         // Convert back to XOnlyPublicKey
-        let tweaked_bytes = tweaked.serialize();
-        // Skip the first byte (compression prefix) and take the 32 X-coordinate bytes
-        XOnlyPublicKey::from_slice(&tweaked_bytes[1..]).map_err(|_| ExecError::SchnorrSig)
+        Ok(tweaked.x_only_public_key().0)
     }
 
     /// Apply BIP-341 taptweak
@@ -274,12 +292,12 @@ impl<'a> Exec<'a> {
         // Tagged hash prefix for TapTweak
         let tag = b"TapTweak";
         let tag_hash = sha256::Hash::hash(tag);
-        engine.input(&tag_hash[..]);
-        engine.input(&tag_hash[..]);
+        engine.input(tag_hash.as_byte_array());
+        engine.input(tag_hash.as_byte_array());
 
         // Input: pk || taptree
         engine.input(&pk.serialize());
-        engine.input(&taptree[..]);
+        engine.input(taptree.as_byte_array());
 
         let tweak_hash = bitcoin::hashes::sha256::Hash::from_engine(engine);
 
@@ -404,7 +422,10 @@ impl<'a> Exec<'a> {
         }
 
         if let Some(ref mut input_state) = self.ccv_input_state {
-            input_state.residual_input_amount -= amount;
+            input_state.residual_input_amount = input_state
+                .residual_input_amount
+                .checked_sub(amount)
+                .ok_or(ExecError::CCVInsufficientAmount)?;
         }
 
         Ok(())
@@ -412,16 +433,11 @@ impl<'a> Exec<'a> {
 
     // Helper methods
 
-    fn is_minimal_minus_one(&self, bytes: &[u8]) -> bool {
-        // Check if bytes represent minimally encoded -1 (0x81)
-        bytes == [0x81]
-    }
-
-    fn make_p2tr_script(&self, key: &XOnlyPublicKey) -> Result<Vec<u8>, ExecError> {
+    fn make_p2tr_script(key: &XOnlyPublicKey) -> Vec<u8> {
         // Create P2TR scriptPubKey: OP_1 (0x51) + 32-byte key
         let mut script = vec![0x51, 0x20]; // OP_1 + push 32 bytes
         script.extend_from_slice(&key.serialize());
-        Ok(script)
+        script
     }
 }
 
@@ -435,7 +451,6 @@ mod tests {
     use bitcoin::secp256k1::XOnlyPublicKey;
     use bitcoin::{Amount, ScriptBuf, Transaction, TxOut, consensus::deserialize};
     use bitcoin_script::{define_pushable, script};
-    use hex;
     use serde::Deserialize;
     use std::str::FromStr;
 
@@ -613,7 +628,8 @@ mod tests {
         // We want append_data on top (popped first), old_data below
         let witness_data = vec![append_data.to_vec(), old_data.to_vec()];
 
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, witness_data)]);
+        let witness_carrier =
+            TxOut::sake_witness_carrier(&[(0, witness_data)]).expect("valid SAKE witness carrier");
         let tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -634,7 +650,8 @@ mod tests {
         let wrong_old_data = b"fake_state_nonce_9999";
         let malicious_witness_data = vec![append_data.to_vec(), wrong_old_data.to_vec()];
 
-        let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(0, malicious_witness_data)]);
+        let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(0, malicious_witness_data)])
+            .expect("valid SAKE witness carrier");
         let malicious_tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -740,7 +757,8 @@ mod tests {
         // Pass data in witness
         let witness_data = vec![new_taptree.to_byte_array().to_vec(), data.to_vec()];
 
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, witness_data)]);
+        let witness_carrier =
+            TxOut::sake_witness_carrier(&[(0, witness_data)]).expect("valid SAKE witness carrier");
         let tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -766,7 +784,8 @@ mod tests {
         let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(
             0,
             vec![new_taptree.to_byte_array().to_vec(), data.to_vec()],
-        )]);
+        )])
+        .expect("valid SAKE witness carrier");
         let malicious_tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -872,7 +891,8 @@ mod tests {
         // This puts new_data at bottom of stack, prev_accumulator on top (as script expects)
         let witness_data = vec![new_data.clone(), prev_accumulator.clone()];
 
-        let witness_carrier = TxOut::sake_witness_carrier(&[(0, witness_data)]);
+        let witness_carrier =
+            TxOut::sake_witness_carrier(&[(0, witness_data)]).expect("valid SAKE witness carrier");
         let tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -891,7 +911,8 @@ mod tests {
         let wrong_prev_accumulator: Vec<u8> = sha256::Hash::hash(b"wrong").to_byte_array().to_vec();
         let malicious_witness = vec![new_data.clone(), wrong_prev_accumulator];
 
-        let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(0, malicious_witness)]);
+        let malicious_witness_carrier = TxOut::sake_witness_carrier(&[(0, malicious_witness)])
+            .expect("valid SAKE witness carrier");
         let malicious_tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1043,7 +1064,8 @@ mod tests {
                 carrier.push((input_index, vec![]));
             }
 
-            tx.output.push(TxOut::sake_witness_carrier(&carrier));
+            tx.output
+                .push(TxOut::sake_witness_carrier(&carrier).expect("valid SAKE witness carrier"));
             let result = validate(&tx, &prevouts, &inputs);
 
             match tv.broadcast_error.as_deref() {
@@ -1125,7 +1147,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1176,7 +1199,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1228,7 +1252,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1295,7 +1320,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1344,7 +1370,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1395,7 +1422,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1464,7 +1492,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1506,7 +1535,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1554,7 +1584,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1601,7 +1632,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1645,7 +1677,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1689,7 +1722,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1753,7 +1787,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1811,7 +1846,8 @@ mod tests {
             // Output 0: 300 sats — satisfies input 0's DEFAULT (300 >= 300) and has a value
             // small enough that input 1's residual (500) passes the residual check.
             let output = create_p2tr_output(internal_key, None, 300);
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])])
+                .expect("valid SAKE witness carrier");
 
             // Input 0 script: DEFAULT on output 0
             let script_input_0 = {
@@ -1910,7 +1946,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -1986,7 +2023,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -2051,7 +2089,8 @@ mod tests {
 
             let make_tx = |output_amount: u64| {
                 let output = create_p2tr_output(internal_key, None, output_amount);
-                let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
+                let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])])
+                    .expect("valid SAKE witness carrier");
                 Transaction {
                     version: bitcoin::transaction::Version::TWO,
                     lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -2117,7 +2156,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -2193,7 +2233,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -2275,7 +2316,8 @@ mod tests {
                 .encode_sake_script(&[dummy_oracle_pk()], 1)
                 .unwrap();
 
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![])]);
+            let witness_carrier =
+                TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier");
             let tx = Transaction {
                 version: bitcoin::transaction::Version::TWO,
                 lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -2323,7 +2365,8 @@ mod tests {
             ];
 
             let output = create_p2tr_output(internal_key, None, 300);
-            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])]);
+            let witness_carrier = TxOut::sake_witness_carrier(&[(0, vec![]), (1, vec![])])
+                .expect("valid SAKE witness carrier");
 
             let script_input_0 = {
                 let s = script! {

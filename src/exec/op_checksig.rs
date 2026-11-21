@@ -101,6 +101,11 @@ impl<'a> Exec<'a> {
         Ok(true)
     }
 
+    // BIP-348 verifies a message of any length. rust-bitcoin 0.32 pins
+    // secp256k1 0.29, and its safe `verify_schnorr` always passes a 32-byte
+    // length to libsecp256k1. secp256k1 0.30 and later accept `&[u8]`.
+    // Remove this FFI call and use the safe API after the upgrade.
+    #[allow(unsafe_code)]
     fn verify_schnorr_bytes(
         &self,
         sig: &secp256k1::schnorr::Signature,
@@ -274,7 +279,7 @@ mod tests {
         // Validate
 
         let mut sighashcache = SighashCache::new(tx);
-        let mut exec = Exec::new(&mut sighashcache, &prevouts, 0, &script, witness).unwrap();
+        let mut exec = Exec::new(&secp, &mut sighashcache, &prevouts, 0, &script, witness).unwrap();
 
         loop {
             match exec.exec_next() {
@@ -343,7 +348,7 @@ mod tests {
         // Validate
 
         let mut sighashcache = SighashCache::new(tx);
-        let mut exec = Exec::new(&mut sighashcache, &prevouts, 0, &script, witness).unwrap();
+        let mut exec = Exec::new(&secp, &mut sighashcache, &prevouts, 0, &script, witness).unwrap();
 
         loop {
             match exec.exec_next() {

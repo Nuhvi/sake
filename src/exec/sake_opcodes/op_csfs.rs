@@ -6,11 +6,18 @@ use crate::{Exec, exec::ExecError};
 
 pub(crate) const OP_CODE: Opcode = OP_RETURN_204;
 
+/// Returns the `OP_CHECKSIGFROMSTACK` opcode as a one-byte script.
 #[allow(non_snake_case)]
+#[must_use]
 pub fn OP_CHECKSIGFROMSTACK() -> ScriptBuf {
     ScriptBuf::from_bytes(vec![OP_CODE.to_u8()])
 }
+
+/// Returns the `OP_CSFS` opcode as a one-byte script.
+///
+/// This function is an alias for [`OP_CHECKSIGFROMSTACK`].
 #[allow(non_snake_case)]
+#[must_use]
 pub fn OP_CSFS() -> ScriptBuf {
     OP_CHECKSIGFROMSTACK()
 }

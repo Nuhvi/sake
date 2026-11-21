@@ -1,22 +1,9 @@
 //! SAKE Script Army Knife Emulation
+//!
+//! The crate validates and signs the SAKE script encoding of a taproot
+//! transaction. The lint policy is in `Cargo.toml`.
 
-#![deny(
-    // missing_docs, 
-    unused_must_use
-)]
-#![deny(rustdoc::broken_intra_doc_links)]
-#![deny(
-    clippy::panic,
-    clippy::unwrap_used,
-    // clippy::expect_used,
-    clippy::await_holding_lock,
-    clippy::indexing_slicing,
-    clippy::await_holding_refcell_ref,
-    clippy::fallible_impl_from,
-    clippy::wildcard_enum_match_arm,
-    clippy::unneeded_field_pattern,
-    clippy::fn_params_excessive_bools
-)]
+// Panics are acceptable in tests, where a failure must stop the test.
 #![cfg_attr(
     test,
     allow(
@@ -42,6 +29,7 @@ mod error;
 mod exec;
 mod script_encoding;
 mod stack;
+mod varint;
 mod witness_carrier;
 
 use exec::Exec;
@@ -182,7 +170,19 @@ impl SakeInput {
 /// - `inputs`: The inputs to evaluate.
 pub fn validate(tx: &Transaction, prevouts: &[TxOut], inputs: &[SakeInput]) -> Result<(), Error> {
     let secp = Secp256k1::new();
-    validate_inner(&secp, None, tx, prevouts, inputs).map(|_| ())
+    validate_with_secp(&secp, tx, prevouts, inputs)
+}
+
+/// Like [`validate`], with a caller-provided secp256k1 context.
+///
+/// Use this function to reuse one context for many validations.
+pub fn validate_with_secp(
+    secp: &Secp256k1<All>,
+    tx: &Transaction,
+    prevouts: &[TxOut],
+    inputs: &[SakeInput],
+) -> Result<(), Error> {
+    validate_inner(secp, None, tx, prevouts, inputs).map(|_| ())
 }
 
 /// Validates SAKE inputs and returns one script-spend signature per SAKE input,
@@ -353,6 +353,7 @@ fn validate_inner(
             })?
             .clone();
         let mut exec = Exec::new_with_ccv(
+            secp,
             &mut stripped_sighashcache,
             prevouts,
             parsed_input.index,
@@ -449,7 +450,7 @@ mod tests {
         validate, validate_and_sign,
     };
 
-    pub fn dummy_tx() -> (Transaction, Vec<TxOut>) {
+    pub(crate) fn dummy_tx() -> (Transaction, Vec<TxOut>) {
         let dummy_tx = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: bitcoin::locktime::absolute::LockTime::ZERO,
@@ -543,17 +544,19 @@ mod tests {
         (dummy_tx, prevouts)
     }
 
-    pub fn dummy_tx_with_witness_carrier(witness: Vec<Vec<u8>>) -> (Transaction, Vec<TxOut>) {
+    pub(crate) fn dummy_tx_with_witness_carrier(
+        witness: Vec<Vec<u8>>,
+    ) -> (Transaction, Vec<TxOut>) {
         let (mut dummy_tx, prevouts) = dummy_tx();
 
-        dummy_tx
-            .output
-            .push(TxOut::sake_witness_carrier(&[(0, witness)]));
+        dummy_tx.output.push(
+            TxOut::sake_witness_carrier(&[(0, witness)]).expect("valid SAKE witness carrier"),
+        );
 
         (dummy_tx, prevouts)
     }
 
-    pub fn validate_single_script(
+    pub(crate) fn validate_single_script(
         emulated_script: ScriptBuf,
         witness: Vec<Vec<u8>>,
     ) -> Result<(), Error> {
@@ -574,7 +577,9 @@ mod tests {
     }
 
     /// Returns (pk, msg, sig) bytes
-    pub fn mock_signed_message(secp: &Secp256k1<All>) -> (XOnlyPublicKey, [u8; 32], [u8; 64]) {
+    pub(crate) fn mock_signed_message(
+        secp: &Secp256k1<All>,
+    ) -> (XOnlyPublicKey, [u8; 32], [u8; 64]) {
         // Generate a random keypair for the test
         let mut rng = secp256k1::rand::thread_rng();
         let keypair = secp256k1::Keypair::new(secp, &mut rng);
@@ -613,7 +618,8 @@ mod tests {
     fn test_validate_and_sign_uses_script_spend_sighash() {
         let (secp, keypair, pk) = oracle_keypair();
         let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
-        tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
+        tx.output
+            .push(TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier"));
 
         let native = script! { OP_1 }.encode_sake_script(&[pk], 1).unwrap();
         let signatures = validate_and_sign(
@@ -653,7 +659,8 @@ mod tests {
     fn test_validate_and_sign_rejects_invalid_sake_script() {
         let (_secp, keypair, pk) = oracle_keypair();
         let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
-        tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
+        tx.output
+            .push(TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier"));
 
         let native = script! { OP_0 }.encode_sake_script(&[pk], 1).unwrap();
         let result = validate_and_sign(&keypair, &tx, &prevouts, &[SakeInput::new(0, native)]);
@@ -693,7 +700,8 @@ mod tests {
         assert_eq!(decoded, large_script);
 
         let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
-        tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
+        tx.output
+            .push(TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier"));
         assert!(validate(&tx, &prevouts, &[SakeInput::new(0, encoded)]).is_ok());
     }
 
@@ -739,8 +747,10 @@ mod tests {
         };
         let encoded = emulated.encode_sake_script(&[pk], 1).unwrap();
         let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
-        tx.output
-            .push(TxOut::sake_witness_carrier(&[(0, vec![vec![0x42u8; 520]])]));
+        tx.output.push(
+            TxOut::sake_witness_carrier(&[(0, vec![vec![0x42u8; 520]])])
+                .expect("valid SAKE witness carrier"),
+        );
 
         assert!(validate(&tx, &prevouts, &[SakeInput::new(0, encoded)]).is_ok());
     }
@@ -756,10 +766,13 @@ mod tests {
         };
         let encoded = emulated.encode_sake_script(&[pk], 1).unwrap();
         let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
-        tx.output.push(TxOut::sake_witness_carrier(&[(
-            0,
-            vec![vec![0xAAu8; 400], vec![0xBBu8; 400], vec![0xCCu8; 400]],
-        )]));
+        tx.output.push(
+            TxOut::sake_witness_carrier(&[(
+                0,
+                vec![vec![0xAAu8; 400], vec![0xBBu8; 400], vec![0xCCu8; 400]],
+            )])
+            .expect("valid SAKE witness carrier"),
+        );
 
         assert!(validate(&tx, &prevouts, &[SakeInput::new(0, encoded)]).is_ok());
     }
@@ -790,7 +803,8 @@ mod tests {
             input: vec![Default::default()],
             output: vec![],
         };
-        tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
+        tx.output
+            .push(TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier"));
 
         let input = SakeInput::new_with_control_block(0, encoded.clone(), control_block.clone());
         assert!(
@@ -861,7 +875,8 @@ mod tests {
             input: vec![Default::default()],
             output: vec![],
         };
-        tx.output.push(TxOut::sake_witness_carrier(&[(0, vec![])]));
+        tx.output
+            .push(TxOut::sake_witness_carrier(&[(0, vec![])]).expect("valid SAKE witness carrier"));
 
         let input = SakeInput::new_with_control_block(0, encoded, control_block);
         assert!(validate(&tx, &[prevout], &[input]).is_ok());

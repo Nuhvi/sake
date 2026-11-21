@@ -10,22 +10,22 @@ use bitcoin::sighash::SighashCache;
 use bitcoin::taproot::{self, TapLeafHash, TapNodeHash};
 use bitcoin::transaction::{Transaction, TxOut};
 
-pub use crate::error::{Error, ExecError};
-pub use crate::stack::{ConditionStack, Stack};
+pub(crate) use crate::error::{Error, ExecError};
+use crate::stack::{ConditionStack, Stack};
 
 mod op_checksig;
 mod sake_opcodes {
-    pub mod op_amount;
-    pub mod op_cat;
-    pub mod op_ccv;
-    pub mod op_csfs;
-    pub mod op_th;
+    pub(crate) mod op_amount;
+    pub(crate) mod op_cat;
+    pub(crate) mod op_ccv;
+    pub(crate) mod op_csfs;
+    pub(crate) mod op_th;
 }
 
-pub use sake_opcodes::op_amount;
-pub use sake_opcodes::op_ccv;
-pub use sake_opcodes::op_csfs;
-pub use sake_opcodes::op_th;
+pub(crate) use sake_opcodes::op_amount;
+pub(crate) use sake_opcodes::op_ccv;
+pub(crate) use sake_opcodes::op_csfs;
+pub(crate) use sake_opcodes::op_th;
 
 /// Maximum number of bytes pushable to the stack
 const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
@@ -40,7 +40,7 @@ const VALIDATION_WEIGHT_OFFSET: i64 = 50;
 const VALIDATION_WEIGHT_PER_SIGOP_PASSED: i64 = 50;
 
 /// Partial execution of a script.
-pub struct Exec<'a> {
+pub(crate) struct Exec<'a> {
     prevouts: &'a [TxOut],
     input_idx: usize,
     leaf_hash: TapLeafHash,
@@ -59,9 +59,8 @@ pub struct Exec<'a> {
     /// Cached `sha_sequences` and `sha_outputs` for OP_TEMPLATEHASH.
     template_hashes: Option<(sha256::Hash, sha256::Hash)>,
 
-    secp: secp256k1::Secp256k1<secp256k1::VerifyOnly>,
-    /// Signing context for CCV's public key tweaks, reused across opcodes.
-    secp_sign: secp256k1::Secp256k1<secp256k1::SignOnly>,
+    /// Caller-owned secp256k1 context for signature checks and key tweaks.
+    secp: &'a secp256k1::Secp256k1<secp256k1::All>,
 
     /// CCV per-input state (residual amount tracking)
     pub(crate) ccv_input_state: Option<op_ccv::CCVInputState>,
@@ -75,6 +74,7 @@ pub struct Exec<'a> {
 
 impl<'a> Exec<'a> {
     pub(crate) fn new(
+        secp: &'a secp256k1::Secp256k1<secp256k1::All>,
         sighashcache: &'a mut SighashCache<Transaction>,
         prevouts: &'a [TxOut],
         input_idx: usize,
@@ -111,8 +111,7 @@ impl<'a> Exec<'a> {
             validation_weight: start_validation_weight,
             template_hashes: None,
 
-            secp: secp256k1::Secp256k1::verification_only(),
-            secp_sign: secp256k1::Secp256k1::signing_only(),
+            secp,
 
             ccv_input_state: None,
             ccv_tx_state: None,
@@ -126,6 +125,7 @@ impl<'a> Exec<'a> {
     /// input's taproot spend information (for `pk = -1` / `taptree = -1`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_ccv(
+        secp: &'a secp256k1::Secp256k1<secp256k1::All>,
         sighashcache: &'a mut SighashCache<Transaction>,
         prevouts: &'a [TxOut],
         input_idx: usize,
@@ -135,7 +135,14 @@ impl<'a> Exec<'a> {
         current_input_internal_key: Option<XOnlyPublicKey>,
         current_input_taptree: Option<TapNodeHash>,
     ) -> Result<Exec<'a>, Error> {
-        let mut exec = Self::new(sighashcache, prevouts, input_idx, script, script_witness)?;
+        let mut exec = Self::new(
+            secp,
+            sighashcache,
+            prevouts,
+            input_idx,
+            script,
+            script_witness,
+        )?;
 
         // Initialize per-input CCV state (BIP-443 section "Input initialization")
         let input_amount = prevouts
@@ -154,17 +161,28 @@ impl<'a> Exec<'a> {
     // EXECUTION //
     ///////////////
 
-    /// Returns true when execution is done.
-    pub fn exec_next(&mut self) -> Result<(), ExecError> {
+    /// Executes the next instruction.
+    ///
+    /// Returns [`ExecError::NoMoreInstructions`] when the script ends.
+    pub(crate) fn exec_next(&mut self) -> Result<(), ExecError> {
         // Get the next instruction from the remaining script
-        let remaining = &self.script[self.instruction_position..];
-        let mut instructions = remaining.instructions_minimal();
+        let Some(remaining) = self.script.as_bytes().get(self.instruction_position..) else {
+            return Err(ExecError::InvalidScript(script::Error::EarlyEndOfScript));
+        };
+        let remaining_len = remaining.len();
+        let mut instructions = Script::from_bytes(remaining).instructions_minimal();
 
         self.current_position = self.instruction_position;
         let instruction = match instructions.next() {
             Some(Ok(i)) => {
-                // Update position for next iteration
-                self.instruction_position = self.script.len() - instructions.as_script().len();
+                // Update the position for the next iteration.
+                let consumed = remaining_len
+                    .checked_sub(instructions.as_script().len())
+                    .ok_or(ExecError::InvalidScript(script::Error::EarlyEndOfScript))?;
+                self.instruction_position = self
+                    .instruction_position
+                    .checked_add(consumed)
+                    .ok_or(ExecError::InvalidScript(script::Error::EarlyEndOfScript))?;
                 i
             }
             None => {
@@ -181,7 +199,7 @@ impl<'a> Exec<'a> {
                         .unwrap_or_default();
                 return Err(ExecError::NoMoreInstructions { success });
             }
-            Some(Err(_)) => unreachable!("we checked the script beforehand"),
+            Some(Err(err)) => return Err(ExecError::InvalidScript(err)),
         };
 
         let exec = self.cond_stack.all_true();
@@ -429,7 +447,16 @@ impl<'a> Exec<'a> {
                 self.stack.pop()?;
                 let elem = self.stack.top(-x as isize - 1)?.clone();
                 if op == OP_ROLL {
-                    self.stack.remove(self.stack.len() - x as usize - 1);
+                    let depth = usize::try_from(x)
+                        .ok()
+                        .and_then(|index| index.checked_add(1))
+                        .ok_or(ExecError::InvalidStackOperation)?;
+                    let index = self
+                        .stack
+                        .len()
+                        .checked_sub(depth)
+                        .ok_or(ExecError::InvalidStackOperation)?;
+                    self.stack.remove(index)?;
                 }
                 self.stack.push(elem);
             }
@@ -503,7 +530,7 @@ impl<'a> Exec<'a> {
                     OP_ABS => x.abs(),
                     OP_NOT => (x == 0) as i64,
                     OP_0NOTEQUAL => (x != 0) as i64,
-                    _ => unreachable!(),
+                    _ => return Err(ExecError::BadOpcode),
                 };
                 self.stack.pop()?;
                 self.stack.pushnum(res);
@@ -543,7 +570,7 @@ impl<'a> Exec<'a> {
                     OP_GREATERTHANOREQUAL => (x1 >= x2) as i64,
                     OP_MIN => cmp::min(x1, x2),
                     OP_MAX => cmp::max(x1, x2),
-                    _ => unreachable!(),
+                    _ => return Err(ExecError::BadOpcode),
                 };
                 if op == OP_NUMEQUALVERIFY && res == 0 {
                     return Err(ExecError::NumEqualVerify);
@@ -572,34 +599,34 @@ impl<'a> Exec<'a> {
             OP_RIPEMD160 => {
                 let top = self.stack.popstr()?;
                 self.stack
-                    .pushstr(ripemd160::Hash::hash(&top[..]).to_byte_array().as_ref());
+                    .pushstr(ripemd160::Hash::hash(&top).to_byte_array().as_ref());
             }
             OP_SHA1 => {
                 let top = self.stack.popstr()?;
                 self.stack
-                    .pushstr(sha1::Hash::hash(&top[..]).to_byte_array().as_ref());
+                    .pushstr(sha1::Hash::hash(&top).to_byte_array().as_ref());
             }
             OP_SHA256 => {
                 let top = self.stack.popstr()?;
                 self.stack
-                    .pushstr(sha256::Hash::hash(&top[..]).to_byte_array().as_ref());
+                    .pushstr(sha256::Hash::hash(&top).to_byte_array().as_ref());
             }
             OP_HASH160 => {
                 let top = self.stack.popstr()?;
                 self.stack
-                    .pushstr(hash160::Hash::hash(&top[..]).to_byte_array().as_ref());
+                    .pushstr(hash160::Hash::hash(&top).to_byte_array().as_ref());
             }
             OP_HASH256 => {
                 let top = self.stack.popstr()?;
                 self.stack
-                    .pushstr(sha256d::Hash::hash(&top[..]).to_byte_array().as_ref());
+                    .pushstr(sha256d::Hash::hash(&top).to_byte_array().as_ref());
             }
 
             OP_CODESEPARATOR => return Err(ExecError::DisabledOpcode),
 
             OP_CHECKSIG | OP_CHECKSIGVERIFY => {
-                let sig = self.stack.topstr(-2)?.clone();
-                let pk = self.stack.topstr(-1)?.clone();
+                let sig = self.stack.topstr(-2)?;
+                let pk = self.stack.topstr(-1)?;
                 let res = self.verify_transaction_signature(&sig, &pk)?;
                 self.stack.popn(2)?;
                 if op == OP_CHECKSIGVERIFY && !res {
@@ -612,9 +639,9 @@ impl<'a> Exec<'a> {
             }
 
             OP_CHECKSIGADD => {
-                let sig = self.stack.topstr(-3)?.clone();
+                let sig = self.stack.topstr(-3)?;
                 let mut n = self.stack.topnum(-2)?;
-                let pk = self.stack.topstr(-1)?.clone();
+                let pk = self.stack.topstr(-1)?;
                 let res = self.verify_transaction_signature(&sig, &pk)?;
                 self.stack.popn(3)?;
                 if res {
@@ -650,9 +677,11 @@ impl<'a> Exec<'a> {
 /// Note that in the majority of cases, you will want to use
 /// [`read_scriptint`] instead.
 ///
-/// Panics if max_size exceeds 8.
-pub fn read_scriptint_size(v: &[u8], max_size: usize) -> Result<i64, script::Error> {
-    assert!(max_size <= 8);
+/// Returns [`script::Error::NumericOverflow`] if `max_size` exceeds 8.
+fn read_scriptint_size(v: &[u8], max_size: usize) -> Result<i64, script::Error> {
+    if max_size > 8 {
+        return Err(script::Error::NumericOverflow);
+    }
 
     if v.len() > max_size {
         return Err(script::Error::NumericOverflow);
@@ -664,9 +693,8 @@ pub fn read_scriptint_size(v: &[u8], max_size: usize) -> Result<i64, script::Err
 
     // require minimal
     {
-        let last = match v.last() {
-            Some(last) => last,
-            None => return Ok(0),
+        let Some(last) = v.last() else {
+            return Ok(0);
         };
         // Comment and code copied from Bitcoin Core:
         // https://github.com/bitcoin/bitcoin/blob/447f50e4aed9a8b1d80e1891cda85801aeb80b4e/src/script/script.h#L247-L262
@@ -679,8 +707,13 @@ pub fn read_scriptint_size(v: &[u8], max_size: usize) -> Result<i64, script::Err
             // it would conflict with the sign bit. An example of this case
             // is +-255, which encode to 0xff00 and 0xff80 respectively.
             // (big-endian).
-            #[allow(clippy::indexing_slicing)]
-            if v.len() <= 1 || (v[v.len() - 2] & 0x80) == 0 {
+            let second_last = v
+                .len()
+                .checked_sub(2)
+                .and_then(|index| v.get(index))
+                .copied()
+                .unwrap_or_default();
+            if v.len() <= 1 || (second_last & 0x80) == 0 {
                 return Err(script::Error::NonMinimalPush);
             }
         }
@@ -689,13 +722,24 @@ pub fn read_scriptint_size(v: &[u8], max_size: usize) -> Result<i64, script::Err
     Ok(scriptint_parse(v))
 }
 
+/// Parses a minimally encoded script number.
+///
+/// The caller limits `v` to 8 bytes, so every shift stays in range. Values
+/// that use all 8 bytes with the sign bit set are valid here. Numeric opcodes
+/// reject them later because they do not fit in four bytes.
 fn scriptint_parse(v: &[u8]) -> i64 {
-    let (mut ret, sh) = v
-        .iter()
-        .fold((0, 0), |(acc, sh), n| (acc + ((*n as i64) << sh), sh + 8));
+    if v.is_empty() {
+        return 0;
+    }
 
-    if v.last().copied().unwrap_or_default() & 0x80 != 0 {
-        let mask = ((1u64 << (sh - 1)) - 1) as i64;
+    let mut ret = 0i64;
+    for (index, byte) in v.iter().take(8).enumerate() {
+        ret |= i64::from(*byte) << (8 * index);
+    }
+
+    if v.last().is_some_and(|last| last & 0x80 != 0) {
+        let bit_len = 8 * v.len().min(8);
+        let mask = i64::MAX >> (64 - bit_len);
         ret &= mask;
         ret = -ret;
     }
@@ -708,7 +752,37 @@ pub(crate) fn read_scriptint(item: &[u8], size: usize) -> Result<i64, ExecError>
         script::Error::NonMinimalPush => ExecError::MinimalData,
         // only possible if size is 4 or lower
         script::Error::NumericOverflow => ExecError::ScriptIntNumericOverflow,
-        // should never happen
-        _ => unreachable!(),
+        // `read_scriptint_size` returns only the two variants above.
+        _ => ExecError::ScriptIntNumericOverflow,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scriptint_parse_is_little_endian() {
+        assert_eq!(scriptint_parse(&[]), 0);
+        assert_eq!(scriptint_parse(&[0x00]), 0);
+        assert_eq!(scriptint_parse(&[0x5f, 0x01]), 351);
+        assert_eq!(scriptint_parse(&[0x81]), -1);
+        assert_eq!(scriptint_parse(&[0xff, 0x00]), 255);
+        assert_eq!(scriptint_parse(&[0xff, 0x80]), -255);
+        assert_eq!(scriptint_parse(&[0xff; 8]), i64::MIN + 1);
+    }
+
+    #[test]
+    fn test_read_scriptint_size_limits() {
+        assert_eq!(
+            read_scriptint_size(&[0x01], 9),
+            Err(script::Error::NumericOverflow)
+        );
+        assert_eq!(
+            read_scriptint_size(&[0x00], 4),
+            Err(script::Error::NonMinimalPush)
+        );
+        assert_eq!(read_scriptint_size(&[0x81], 4), Ok(-1));
+        assert_eq!(read_scriptint_size(&[0x5f, 0x01], 4), Ok(351));
+    }
 }
