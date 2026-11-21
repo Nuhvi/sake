@@ -14,14 +14,49 @@ const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
 const MAX_STACK_SIZE: usize = 1000;
 
 pub trait SakeWitnessCarrier {
-    fn sake_witness_carrier(stacks: &[(usize, Vec<Vec<u8>>)]) -> TxOut;
+    /// Builds a SAKE witness carrier, rejecting stacks that the BIP-342
+    /// initial stack limits would reject.
+    ///
+    /// Returns [`WitnessCarrierError::TooManyElements`] when a stack has more
+    /// than 1000 elements, [`WitnessCarrierError::InvalidElement`] when an
+    /// element is larger than 520 bytes, and
+    /// [`WitnessCarrierError::PayloadTooLong`] when the payload exceeds the
+    /// `PushBytes` encoding limit.
+    fn try_sake_witness_carrier(
+        stacks: &[(usize, Vec<Vec<u8>>)],
+    ) -> Result<TxOut, WitnessCarrierError>;
+
+    /// Generates a SAKE witness carrier output.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stacks violate the BIP-342 initial stack limits or if the
+    /// payload exceeds the `PushBytes` encoding limit. Use
+    /// [`SakeWitnessCarrier::try_sake_witness_carrier`] for untrusted data.
+    fn sake_witness_carrier(stacks: &[(usize, Vec<Vec<u8>>)]) -> TxOut {
+        Self::try_sake_witness_carrier(stacks).expect("invalid SAKE witness carrier")
+    }
+
     #[allow(clippy::type_complexity)]
     fn parse_witness_stacks(&self) -> Result<Vec<(usize, Vec<Vec<u8>>)>, WitnessCarrierError>;
 }
 
 impl SakeWitnessCarrier for TxOut {
     /// Generates a SAKE witness carriers scriptPubkey from multiple script witness stacks
-    fn sake_witness_carrier(stacks: &[(usize, Vec<Vec<u8>>)]) -> TxOut {
+    fn try_sake_witness_carrier(
+        stacks: &[(usize, Vec<Vec<u8>>)],
+    ) -> Result<TxOut, WitnessCarrierError> {
+        for (_, stack) in stacks {
+            if stack.len() > MAX_STACK_SIZE {
+                return Err(WitnessCarrierError::TooManyElements);
+            }
+            for element in stack {
+                if element.len() > MAX_SCRIPT_ELEMENT_SIZE {
+                    return Err(WitnessCarrierError::InvalidElement);
+                }
+            }
+        }
+
         let mut bytes = vec![];
 
         // 1. "SAKE" (4 bytes)
@@ -53,12 +88,12 @@ impl SakeWitnessCarrier for TxOut {
 
         let mut data = PushBytesBuf::new();
         data.extend_from_slice(&bytes)
-            .expect("Script witnesses too long");
+            .map_err(|_| WitnessCarrierError::PayloadTooLong)?;
 
-        TxOut {
+        Ok(TxOut {
             value: Amount::ZERO,
             script_pubkey: ScriptBuf::new_op_return(data),
-        }
+        })
     }
 
     /// Parses witness stacks from an OP_RETURN script.
@@ -100,13 +135,17 @@ impl SakeWitnessCarrier for TxOut {
         let mut witness_stacks = Vec::new();
 
         // Check if there is more data to read (cursor position < payload length)
-        while (cursor.position() as usize) < payload.len() {
+        while cursor.position() < payload.len() as u64 {
             let input_index = match VarInt::consensus_decode(&mut cursor) {
-                Ok(v) => v.0 as usize,
+                Ok(v) => {
+                    usize::try_from(v.0).map_err(|_| WitnessCarrierError::InvalidInputIndex)?
+                }
                 Err(_) => return Err(WitnessCarrierError::InvalidInputIndex),
             };
             let n = match VarInt::consensus_decode(&mut cursor) {
-                Ok(v) => v.0 as usize,
+                Ok(v) => {
+                    usize::try_from(v.0).map_err(|_| WitnessCarrierError::InvalidElementsCount)?
+                }
                 Err(_) => return Err(WitnessCarrierError::InvalidElementsCount),
             };
             if n > MAX_STACK_SIZE {
@@ -117,10 +156,14 @@ impl SakeWitnessCarrier for TxOut {
 
             for _ in 0..n {
                 let element_len = match VarInt::consensus_decode(&mut cursor) {
-                    Ok(v) => v.0 as usize,
+                    Ok(v) => {
+                        usize::try_from(v.0).map_err(|_| WitnessCarrierError::InvalidElement)?
+                    }
                     Err(_) => return Err(WitnessCarrierError::InvalidElement),
                 };
-                let remaining = payload.len().saturating_sub(cursor.position() as usize);
+                let position = usize::try_from(cursor.position())
+                    .map_err(|_| WitnessCarrierError::InvalidElement)?;
+                let remaining = payload.len().saturating_sub(position);
                 if element_len > MAX_SCRIPT_ELEMENT_SIZE || element_len > remaining {
                     return Err(WitnessCarrierError::InvalidElement);
                 }
@@ -150,6 +193,7 @@ pub enum WitnessCarrierError {
     InvalidElementsCount,
     InvalidElement,
     TooManyElements,
+    PayloadTooLong,
 }
 
 #[cfg(test)]
@@ -198,5 +242,32 @@ mod test {
 
             assert_eq!(parsed, stacks, "Round-trip failed: original != parsed");
         }
+    }
+
+    #[test]
+    fn test_try_carrier_rejects_oversized_element() {
+        let stacks = vec![(0usize, vec![vec![0u8; MAX_SCRIPT_ELEMENT_SIZE + 1]])];
+        assert!(matches!(
+            TxOut::try_sake_witness_carrier(&stacks),
+            Err(WitnessCarrierError::InvalidElement)
+        ));
+    }
+
+    #[test]
+    fn test_try_carrier_rejects_too_many_elements() {
+        let stacks = vec![(0usize, vec![Vec::new(); MAX_STACK_SIZE + 1])];
+        assert!(matches!(
+            TxOut::try_sake_witness_carrier(&stacks),
+            Err(WitnessCarrierError::TooManyElements)
+        ));
+    }
+
+    #[test]
+    fn test_try_carrier_accepts_limits() {
+        let stacks = vec![(
+            0usize,
+            vec![vec![0u8; MAX_SCRIPT_ELEMENT_SIZE]; MAX_STACK_SIZE],
+        )];
+        assert!(TxOut::try_sake_witness_carrier(&stacks).is_ok());
     }
 }

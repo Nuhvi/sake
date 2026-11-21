@@ -17,9 +17,15 @@ const VERSION_SINGLE_PUSH: u8 = 0;
 const VERSION_CHUNKED: u8 = 1;
 /// Maximum size of one tapscript push element (BIP-342).
 const MAX_PUSH_SIZE: usize = 520;
+/// Maximum number of oracle keys (BIP-342 initial stack element limit).
+///
+/// The native tapscript needs one initial stack element for each oracle
+/// signature, so more than 1000 oracles can never be spent.
+pub const MAX_ORACLES: usize = 1000;
 
 pub trait EncodeSakeScript {
     /// - oracles: List of the emulation oracles' public keys in deterministic order.
+    ///   The list is limited to [`MAX_ORACLES`] entries.
     /// - threshold: Minimum number of oracles required to sign on the emulation success.
     ///
     /// Scripts that fit in a single 520-byte push use encoding version 0.
@@ -40,6 +46,9 @@ impl EncodeSakeScript for ScriptBuf {
     ) -> Result<ScriptBuf, ScriptEncodingError> {
         if oracles.is_empty() {
             return Err(ScriptEncodingError::MissingOracles);
+        }
+        if oracles.len() > MAX_ORACLES {
+            return Err(ScriptEncodingError::TooManyOracles);
         }
         if threshold == 0 || threshold > oracles.len() || (oracles.len() == 1 && threshold != 1) {
             return Err(ScriptEncodingError::InvalidThreshold);
@@ -140,8 +149,10 @@ pub(crate) fn extract_encoded_script(
                     .ok_or(ScriptDecodingError::MissingLength)?;
                 let mut cursor = Cursor::new(length_bytes);
                 let total_len = VarInt::consensus_decode(&mut cursor)
-                    .map_err(|_| ScriptDecodingError::InvalidLength)?
-                    .0 as usize;
+                    .map_err(|_| ScriptDecodingError::InvalidLength)
+                    .and_then(|length| {
+                        usize::try_from(length.0).map_err(|_| ScriptDecodingError::InvalidLength)
+                    })?;
 
                 let mut encoded = Vec::new();
                 if total_len == 0 {
@@ -183,6 +194,10 @@ pub enum ScriptEncodingError {
     /// No oracles XOnlyPublicKeys were provided,
     /// which risks that anyone can spend this script's input.
     MissingOracles,
+    /// The oracle list is longer than [`MAX_ORACLES`] (1000 entries). The
+    /// native tapscript would need more initial stack elements than BIP-342
+    /// allows, so the input could never be spent.
+    TooManyOracles,
     /// The threshold must be between 1 and the number of oracles. A threshold
     /// of 0 with multiple oracles would make the input anyone-can-spend.
     InvalidThreshold,
@@ -272,6 +287,22 @@ mod tests {
         ));
         assert!(script.clone().encode_sake_script(&[pk], 1).is_ok());
         assert!(script.encode_sake_script(&[pk, pk], 2).is_ok());
+    }
+
+    #[test]
+    fn test_too_many_oracles() {
+        let secp = Secp256k1::new();
+        let mut rng = secp256k1::rand::thread_rng();
+        let pk = secp256k1::Keypair::new(&secp, &mut rng)
+            .x_only_public_key()
+            .0;
+        let oracles = vec![pk; MAX_ORACLES + 1];
+        let script = script! { OP_1 };
+
+        assert!(matches!(
+            script.encode_sake_script(&oracles, 1),
+            Err(ScriptEncodingError::TooManyOracles)
+        ));
     }
 
     #[test]

@@ -11,11 +11,21 @@ use crate::{
 };
 
 impl<'a> Exec<'a> {
+    /// Verifies a tapscript transaction signature.
+    ///
+    /// BIP-342 only inspects the signature for a 32-byte public key. Empty
+    /// signatures, empty public keys and unknown public key types do not need
+    /// the sighash. Delegating those cases keeps the signature bytes opaque,
+    /// as required by the unknown-key-type upgrade path.
     pub(crate) fn verify_transaction_signature(
         &mut self,
         sig: &[u8],
         pk: &[u8],
     ) -> Result<bool, ExecError> {
+        if pk.len() != 32 || sig.is_empty() {
+            return self.verify_signature(sig, pk, &[]);
+        }
+
         let (sig, sighash_type) = if let Some((sighash_type_byte, sig)) = sig.split_last()
             && sig.len() == 64
         {

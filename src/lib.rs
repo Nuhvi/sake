@@ -47,7 +47,9 @@ mod witness_carrier;
 use exec::Exec;
 
 pub use error::{Error, ExecError};
-pub use script_encoding::{EncodeSakeScript, ScriptDecodingError, ScriptEncodingError};
+pub use script_encoding::{
+    EncodeSakeScript, MAX_ORACLES, ScriptDecodingError, ScriptEncodingError,
+};
 pub use stack::Stack;
 pub use witness_carrier::{SakeWitnessCarrier, WitnessCarrierError};
 
@@ -70,9 +72,14 @@ pub struct SakeInput {
     pub input_index: usize,
     /// The full tapscript for this input.
     pub script: ScriptBuf,
-    /// Control block proving `script` against the spent output. Used to derive
-    /// the current input's internal key and taptree for
-    /// `OP_CHECKCONTRACTVERIFY`'s `-1` values.
+    /// Control block proving `script` against the spent output. When present,
+    /// [`validate`] checks the taproot commitment and derives the current
+    /// input's internal key and taptree for `OP_CHECKCONTRACTVERIFY`'s `-1`
+    /// values.
+    ///
+    /// Oracles should require this for production signing. Without it the
+    /// library cannot prove that `script` is committed by the prevout, even
+    /// though the returned signature is still bound to the leaf hash.
     pub control_block: Option<ControlBlock>,
     /// Test-only override for the current input's internal key and taptree
     /// Merkle root, used by `OP_CHECKCONTRACTVERIFY`'s `-1` values. This field
@@ -151,8 +158,9 @@ impl SakeInput {
 
 /// Validates the SAKE inputs of a transaction.
 ///
-/// Inputs whose script does not contain a SAKE encoding are ignored. If there
-/// are no SAKE inputs, validation succeeds without doing anything.
+/// Inputs whose script does not contain a SAKE encoding are ignored. If the
+/// list is non-empty but no input has a SAKE encoding, validation succeeds
+/// without doing anything. An empty `inputs` slice returns [`Error::NoInputs`].
 ///
 /// - `tx`: The transaction (used to calculate the sighash) and, when it has
 ///   SAKE inputs, the last output is the witness carrier (`OP_RETURN`).
@@ -423,8 +431,8 @@ mod tests {
     define_pushable!();
 
     use crate::{
-        EncodeSakeScript, Error, OP_CHECKCONTRACTVERIFY, SakeInput, SakeWitnessCarrier, validate,
-        validate_and_sign,
+        EncodeSakeScript, Error, ExecError, OP_CHECKCONTRACTVERIFY, SakeInput, SakeWitnessCarrier,
+        validate, validate_and_sign,
     };
 
     pub fn dummy_tx() -> (Transaction, Vec<TxOut>) {
@@ -686,8 +694,21 @@ mod tests {
         };
         let encoded = emulated.encode_sake_script(&[pk], 1).unwrap();
         let (mut tx, prevouts) = single_input_tx(ScriptBuf::new());
-        tx.output
-            .push(TxOut::sake_witness_carrier(&[(0, vec![vec![0x42u8; 600]])]));
+
+        // Build the carrier by hand: the checked constructor rejects this, so
+        // the parser is tested with an explicitly malformed payload.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(b"SAKE");
+        payload.push(0); // version
+        payload.push(0); // input index 0
+        payload.push(1); // one element
+        payload.extend_from_slice(&[0xfd, 0x58, 0x02]); // 600 as VarInt
+        payload.extend_from_slice(&[0x42u8; 600]);
+        let data = bitcoin::script::PushBytesBuf::try_from(payload).unwrap();
+        tx.output.push(TxOut {
+            value: Amount::ZERO,
+            script_pubkey: ScriptBuf::new_op_return(data),
+        });
 
         let result = validate(&tx, &prevouts, &[SakeInput::new(0, encoded)]);
         assert!(matches!(result, Err(Error::InvalidWitnessCarriers(_))));
@@ -877,5 +898,87 @@ mod tests {
             SakeInput::from_witness(0, &witness),
             Err(Error::AnnexNotSupported { .. })
         ));
+    }
+
+    #[test]
+    fn test_unbalanced_conditional_is_rejected() {
+        // Core rejects scripts that end while an OP_IF is still open.
+        let emulated = script! {
+            OP_1
+            OP_IF
+            OP_1
+        };
+        assert_eq!(
+            validate_single_script(emulated, vec![]),
+            Err(Error::Exec(ExecError::UnbalancedConditional))
+        );
+    }
+
+    #[test]
+    fn test_stack_limit_is_enforced_after_pushes() {
+        // 1001 minimal data pushes, then 1000 OP_DROP. Core rejects the
+        // 1001st push; the emulator must not wait for the next opcode.
+        let mut bytes = Vec::new();
+        for _ in 0..1001 {
+            bytes.push(0x01); // PUSHBYTES_1
+            bytes.push(0x42);
+        }
+        bytes.resize(bytes.len() + 1000, 0x75); // OP_DROP
+        let emulated = ScriptBuf::from_bytes(bytes);
+
+        assert_eq!(
+            validate_single_script(emulated, vec![]),
+            Err(Error::Exec(ExecError::StackSize))
+        );
+    }
+
+    #[test]
+    fn test_five_byte_negative_script_number_is_rejected() {
+        // -2147483647 - 1 needs a 5-byte minimal encoding. The next numeric
+        // operation must reject it, like CScriptNum with a 4-byte limit.
+        let emulated = script! {
+            <-2147483647>
+            1
+            OP_SUB
+            1
+            OP_ADD
+            OP_DROP
+            1
+        };
+
+        assert_eq!(
+            validate_single_script(emulated, vec![]),
+            Err(Error::Exec(ExecError::ScriptIntNumericOverflow))
+        );
+    }
+
+    #[test]
+    fn test_nop4_and_nop5_are_nops() {
+        assert!(validate_single_script(script! { OP_NOP4 OP_NOP5 OP_1 }, vec![]).is_ok());
+    }
+
+    #[test]
+    fn test_unknown_pubkey_type_does_not_inspect_signature() {
+        // BIP-342: a non-empty signature with an unknown key type succeeds
+        // without parsing the signature, including its 65th sighash byte.
+        let emulated = script! {
+            <vec![0xAAu8; 33]>
+            OP_CHECKSIG
+        };
+
+        for sighash_byte in [0x00u8, 0x04] {
+            let mut sig = vec![0x01u8; 64];
+            sig.push(sighash_byte);
+            assert!(
+                validate_single_script(emulated.clone(), vec![sig]).is_ok(),
+                "unknown key type must ignore sighash byte {sighash_byte:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_inputs() {
+        let (tx, prevouts) = single_input_tx(ScriptBuf::new());
+        assert_eq!(validate(&tx, &prevouts, &[]), Err(Error::NoInputs));
     }
 }

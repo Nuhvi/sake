@@ -245,9 +245,9 @@ impl<'a> Exec<'a> {
         let tweak_scalar =
             secp256k1::SecretKey::from_slice(tweak).map_err(|_| ExecError::SchnorrSig)?;
 
-        // T * G - need a signing context for this
-        let secp_sign = secp256k1::Secp256k1::signing_only();
-        let tweak_point = PublicKey::from_secret_key(&secp_sign, &tweak_scalar);
+        // T * G - reuse the executor's signing context instead of creating
+        // one for every OP_CHECKCONTRACTVERIFY evaluation.
+        let tweak_point = PublicKey::from_secret_key(&self.secp_sign, &tweak_scalar);
 
         // Compute Q = P + T (point addition)
         let tweaked = full_pk

@@ -64,7 +64,7 @@ and control block to each oracle.
 Each oracle:
 1. Parses the witness carrier from the last output
 2. Extracts the SAKE encoding from each supplied tapscript
-3. Verifies the control block against the prevout
+3. Verifies each supplied control block against the prevout (oracles should require it)
 4. Removes the witness carrier from the transaction used for emulation
 5. Runs the emulation engine with the carrier's witness stacks
 6. If valid → signs the taproot script-spend sighash | If invalid → rejects
@@ -335,7 +335,8 @@ The witness carrier is always the **last output** in the transaction, formatted 
 OP_RETURN <data>
 ```
 
-Where `<data>` repeats the following group once per SAKE input:
+Where `<data>` starts with the following header, followed by one group per
+SAKE input:
 ```
 "SAKE" (4 bytes)
 | VERSION (1 byte)
@@ -344,6 +345,7 @@ Where `<data>` repeats the following group once per SAKE input:
 | [ELEMENT_LENGTH (VarInt) | ELEMENT_DATA (bytes)]...
 ```
 
+The `"SAKE"` prefix and `VERSION` are written once, not once per input.
 Each stack element is at most 520 bytes and each stack has at most 1000
 elements (the BIP-342 initial stack limits). The whole payload is a single
 push in the `OP_RETURN` output, so the output script itself can be larger
@@ -364,7 +366,9 @@ real transaction, including the carrier output.
 
 1. Receive the transaction, prevouts, and each SAKE input's tapscript + control block
 2. Parse the witness carrier from the last output
-3. Verify each control block against its prevout
+3. Verify each supplied control block against its prevout. Oracles should
+   require the control block: without it the library cannot prove that the
+   script is committed by the prevout.
 4. Extract the SAKE encoding from the tapscript
 5. Run the emulation engine with the carrier's witness stack
 6. If emulation succeeds, sign the tapscript script-spend sighash (`SIGHASH_DEFAULT`)
@@ -500,12 +504,14 @@ SAKE operates within specific constraints to maintain compatibility and security
 - **SAKE inputs only**: The oracle validates and signs inputs that contain a SAKE encoding. Native tapscripts are not validated.
 - **Script size**: Version-0 encodings fit a single push (up to 515 script bytes). Larger scripts use version-1 chunked encoding; every push is at most 520 bytes and the total is bounded by the block weight.
 - **Witness elements**: The carrier stack is limited to 520 bytes per element and 1000 elements.
+- **Oracle count**: At most 1000 oracle keys. The native tapscript needs one initial stack element per oracle signature, and BIP-342 limits the initial stack to 1000 elements.
 
 ### Emulation Behavior
 
 - **OP_CSV and OP_CLTV are NOPs**: They must be placed in the native script, before the encoded SAKE script. The oracle does not validate timelocks.
-- **OP_SUCCESSx → FAIL**: `OP_SUCCESSx` opcodes cause failure instead of success
+- **OP_SUCCESSx → FAIL**: Implemented replacements are `OP_CAT`, `OP_CSFS`, `OP_CCV`, `OP_TEMPLATEHASH`, and `OP_AMOUNT`. Other `OP_SUCCESSx` opcodes fail when executed; the legacy disabled opcodes and `OP_RESERVED` fail even in unexecuted branches.
 - **Pre-carrier introspection**: Signature and introspection opcodes operate on the transaction *without* the witness carrier
+- **Sigop budget**: The emulator charges one signature opcode per 50 bytes of the serialized witness-carrier stack, plus one free signature opcode. It does not use the native witness size.
 
 ## Trust Model
 
@@ -514,10 +520,11 @@ SAKE operates within specific constraints to maintain compatibility and security
 Oracles are **not custodians**:
 - They are not involved in the locking of funds to scripts that require their signatures
 - They only validate and sign inputs that contain a SAKE encoding; native tapscripts are outside their attestation
-- They cannot steal funds locked to their keys until they are informed about it
+- They cannot steal funds before they are told which script locks them
+- After disclosure, a malicious oracle (or a malicious threshold of oracles) can sign a conflicting spend. The native script only enforces the oracle signatures, not the emulated rules.
 - They cannot prevent alternative spending paths
-- They can only refuse to sign (liveness failure)
-- Users can add fallback conditions for oracle failures
+- They can refuse to sign (liveness failure)
+- Users must use a threshold and should add fallback conditions for oracle failures
 
 ### Transparent
 

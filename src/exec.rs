@@ -56,7 +56,12 @@ pub struct Exec<'a> {
 
     validation_weight: i64,
 
+    /// Cached `sha_sequences` and `sha_outputs` for OP_TEMPLATEHASH.
+    template_hashes: Option<(sha256::Hash, sha256::Hash)>,
+
     secp: secp256k1::Secp256k1<secp256k1::VerifyOnly>,
+    /// Signing context for CCV's public key tweaks, reused across opcodes.
+    secp_sign: secp256k1::Secp256k1<secp256k1::SignOnly>,
 
     /// CCV per-input state (residual amount tracking)
     pub(crate) ccv_input_state: Option<op_ccv::CCVInputState>,
@@ -104,8 +109,10 @@ impl<'a> Exec<'a> {
             stack: Stack::from_witness(witness),
             altstack: Stack::new(),
             validation_weight: start_validation_weight,
+            template_hashes: None,
 
             secp: secp256k1::Secp256k1::verification_only(),
+            secp_sign: secp256k1::Secp256k1::signing_only(),
 
             ccv_input_state: None,
             ccv_tx_state: None,
@@ -161,6 +168,10 @@ impl<'a> Exec<'a> {
                 i
             }
             None => {
+                // Core requires all OP_IF/OP_NOTIF to be closed with OP_ENDIF.
+                if !self.cond_stack.is_empty() {
+                    return Err(ExecError::UnbalancedConditional);
+                }
                 let success = self.stack.len() == 1
                     && self
                         .stack
@@ -206,6 +217,12 @@ impl<'a> Exec<'a> {
             }
         }
 
+        // Core checks the stack size after every instruction, including data
+        // pushes (see BIP-342's "Stack + altstack element count limit").
+        if self.stack.len() + self.altstack.len() > MAX_STACK_SIZE {
+            return Err(ExecError::StackSize);
+        }
+
         Ok(())
     }
 
@@ -238,8 +255,8 @@ impl<'a> Exec<'a> {
 
             // OP_CLTV and OP_CSV are NOPs in SAKE emulation; they must be
             // enforced by the native script.
-            OP_NOP | OP_NOP1 | OP_CLTV | OP_CSV | OP_NOP6 | OP_NOP7 | OP_NOP8 | OP_NOP9
-            | OP_NOP10 => {
+            OP_NOP | OP_NOP1 | OP_NOP4 | OP_NOP5 | OP_CLTV | OP_CSV | OP_NOP6 | OP_NOP7
+            | OP_NOP8 | OP_NOP9 | OP_NOP10 => {
                 // nops
             }
 
@@ -612,10 +629,6 @@ impl<'a> Exec<'a> {
 
             // remainder
             _ => return Err(ExecError::BadOpcode),
-        }
-
-        if self.stack.len() + self.altstack.len() > MAX_STACK_SIZE {
-            return Err(ExecError::StackSize);
         }
 
         Ok(())

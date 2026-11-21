@@ -29,6 +29,14 @@ impl StackEntry {
     }
 }
 
+/// Returns true if `v` can be encoded as a minimal 4-byte script number.
+///
+/// The most negative 4-byte value is `-2^31 + 1`, not `i32::MIN`. Values below
+/// it need a 5-byte encoding, which numeric opcodes reject (BIP-342).
+fn fits_four_byte_script_num(v: i64) -> bool {
+    (-(i32::MAX as i64)..=i32::MAX as i64).contains(&v)
+}
+
 #[derive(Clone, Debug, Default, Eq)]
 pub struct Stack(Vec<StackEntry>);
 
@@ -69,7 +77,7 @@ impl Stack {
         let entry = self.top(offset)?;
         match entry {
             StackEntry::Num(v) => {
-                if *v <= i32::MAX as i64 {
+                if fits_four_byte_script_num(*v) {
                     Ok(*v)
                 } else {
                     Err(ExecError::ScriptIntNumericOverflow)
@@ -123,7 +131,7 @@ impl Stack {
         let entry = self.0.pop().ok_or(ExecError::InvalidStackOperation)?;
         match entry {
             StackEntry::Num(v) => {
-                if v <= i32::MAX as i64 {
+                if fits_four_byte_script_num(v) {
                     Ok(v)
                 } else {
                     Err(ExecError::ScriptIntNumericOverflow)
@@ -232,6 +240,11 @@ impl ConditionStack {
 
     pub fn all_true(&self) -> bool {
         self.first_false_pos == Self::NO_FALSE
+    }
+
+    /// Returns true when no conditional (OP_IF/OP_NOTIF) is open.
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
     }
 
     pub fn push(&mut self, v: bool) {

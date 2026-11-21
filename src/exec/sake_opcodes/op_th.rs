@@ -5,7 +5,7 @@ use bitcoin::consensus::Encodable;
 use bitcoin::hashes::{Hash, HashEngine, sha256};
 
 use bitcoin::opcodes::all::OP_RETURN_206;
-use bitcoin::{Opcode, ScriptBuf};
+use bitcoin::{Opcode, ScriptBuf, VarInt};
 
 use crate::exec::{Exec, ExecError};
 
@@ -27,11 +27,23 @@ const TEMPLATEHASH_TAG: &[u8; 32] = &[
 
 impl<'a> Exec<'a> {
     pub(crate) fn handle_op_th(&mut self) -> Result<(), ExecError> {
+        let tx = self.sighashcache.transaction();
+        let (sha_sequences, sha_outputs) = match self.template_hashes {
+            Some(hashes) => hashes,
+            None => {
+                let hashes = (calculate_sha_sequences(tx), calculate_sha_outputs(tx));
+                self.template_hashes = Some(hashes);
+                hashes
+            }
+        };
+
         let template_hash = calculate_template_hash(
-            self.sighashcache.transaction(),
+            tx,
             self.input_idx,
             // Annex is always disabled in SAKE emulation
             None,
+            sha_sequences,
+            sha_outputs,
         );
 
         self.stack.pushstr(template_hash.as_byte_array());
@@ -40,10 +52,32 @@ impl<'a> Exec<'a> {
     }
 }
 
+fn calculate_sha_sequences(tx: &Transaction) -> sha256::Hash {
+    let mut engine = sha256::Hash::engine();
+    for txin in tx.input.iter() {
+        txin.sequence
+            .consensus_encode(&mut engine)
+            .expect("writing to a hash engine cannot fail");
+    }
+    sha256::Hash::from_engine(engine)
+}
+
+fn calculate_sha_outputs(tx: &Transaction) -> sha256::Hash {
+    let mut engine = sha256::Hash::engine();
+    for txout in tx.output.iter() {
+        txout
+            .consensus_encode(&mut engine)
+            .expect("writing to a hash engine cannot fail");
+    }
+    sha256::Hash::from_engine(engine)
+}
+
 fn calculate_template_hash(
     tx: &Transaction,
     input_index: usize,
     annex: Option<&[u8]>,
+    sha_sequences: sha256::Hash,
+    sha_outputs: sha256::Hash,
 ) -> sha256::Hash {
     let mut engine = sha256::Hash::engine();
 
@@ -54,28 +88,8 @@ fn calculate_template_hash(
     // 2. Transaction Data
     engine.input(&tx.version.0.to_le_bytes());
     engine.input(&tx.lock_time.to_consensus_u32().to_le_bytes());
-
-    // TODO: reuse sha_sequences from SighashCache when/if rust_bitcoin expose that api
-    //
-    // Copied from rust bitcoin [SighashCache::common_cache_minimal_borrow]
-    {
-        let mut enc_sequences = sha256::Hash::engine();
-        for txin in tx.input.iter() {
-            txin.sequence
-                .consensus_encode(&mut enc_sequences)
-                .expect("writing to a hash engine cannot fail");
-        }
-        engine.input(sha256::Hash::from_engine(enc_sequences).as_ref());
-
-        // sha_outputs (Precomputed by BIP341 logic)
-        let mut enc = sha256::Hash::engine();
-        for txout in tx.output.iter() {
-            txout
-                .consensus_encode(&mut enc)
-                .expect("writing to a hash engine cannot fail");
-        }
-        engine.input(sha256::Hash::from_engine(enc).as_ref());
-    }
+    engine.input(sha_sequences.as_ref());
+    engine.input(sha_outputs.as_ref());
 
     // 3. Data about this input
     let annex_present: u8 = if annex.is_some() { 1 } else { 0 };
@@ -84,8 +98,15 @@ fn calculate_template_hash(
 
     // 4. Optional Annex
     if let Some(annex_data) = annex {
-        let sha_annex = sha256::Hash::hash(annex_data);
-        engine.input(&sha_annex[..]);
+        // BIP-341 hashes the serialized annex, which includes the CompactSize
+        // length prefix. SAKE rejects annexes, so this branch is currently
+        // unreachable; keep it correct for reuse.
+        let mut annex_engine = sha256::Hash::engine();
+        VarInt(annex_data.len() as u64)
+            .consensus_encode(&mut annex_engine)
+            .expect("writing to a hash engine cannot fail");
+        annex_engine.input(annex_data);
+        engine.input(sha256::Hash::from_engine(annex_engine).as_ref());
     }
 
     sha256::Hash::from_engine(engine)

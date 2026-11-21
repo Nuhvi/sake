@@ -72,7 +72,7 @@ pub enum Error {
     /// Error signing inputs
     SigningError(TaprootError),
 
-    /// No Inputs to validate
+    /// The `inputs` slice is empty
     NoInputs,
 
     /// Number of prevouts does not match the number of transaction inputs.
