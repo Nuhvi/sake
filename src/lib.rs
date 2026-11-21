@@ -25,6 +25,7 @@ use bitcoin::{
     taproot::{ControlBlock, LeafVersion, TapLeafHash, TapNodeHash},
 };
 
+mod bip340;
 mod error;
 mod exec;
 mod script_encoding;

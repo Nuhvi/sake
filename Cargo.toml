@@ -11,6 +11,10 @@ categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
 bitcoin = { version = "0.32.5", features = ["rand-std"] }
+# Temporary direct dependency for safe BIP-348 verification. rust-bitcoin
+# 0.32 pins secp256k1 0.29, whose safe API accepts only 32-byte messages.
+# Remove this dependency after rust-bitcoin uses secp256k1 0.30 or later.
+secp256k1 = "0.33.1"
 
 [dev-dependencies]
 proptest = "1.9.0"
@@ -29,11 +33,9 @@ all-features = true
 [lints.rust]
 missing_docs = "deny"
 unused_must_use = "deny"
-# `forbid` is not possible yet: BIP-348 verifies messages of any length.
-# rust-bitcoin 0.32 pins secp256k1 0.29, and its safe API accepts only 32-byte
-# messages. `verify_schnorr_bytes` allows the one FFI call. Change this to
-# `forbid` after rust-bitcoin moves to secp256k1 0.30 or later.
-unsafe_code = "deny"
+# BIP-348 verification uses the safe API of the direct secp256k1 dependency.
+# See the comment on that dependency for the removal plan.
+unsafe_code = "forbid"
 unreachable_pub = "deny"
 
 [lints.rustdoc]
@@ -62,5 +64,7 @@ wildcard_enum_match_arm = "deny"
 unneeded_field_pattern = "deny"
 fn_params_excessive_bools = "deny"
 
-# Duplicate versions come from the dev-dependencies.
+# Two secp256k1 versions are intentional. The direct dependency provides the
+# safe BIP-348 verifier until rust-bitcoin upgrades. Other duplicates come
+# from the dev-dependencies.
 multiple_crate_versions = "allow"

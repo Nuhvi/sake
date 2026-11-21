@@ -1,9 +1,4 @@
-use bitcoin::{
-    TapSighashType, XOnlyPublicKey,
-    hashes::Hash,
-    secp256k1::{self, ffi::CPtr},
-    sighash::Prevouts,
-};
+use bitcoin::{TapSighashType, XOnlyPublicKey, hashes::Hash, secp256k1, sighash::Prevouts};
 
 use crate::{
     Exec,
@@ -59,7 +54,7 @@ impl<'a> Exec<'a> {
     /// OP_CHECKSIGVERIFY, OP_CHECKSIGADD, and CSFS).
     ///
     /// `msg` is the raw BIP-340 message. BIP-348 permits messages of any
-    /// length, so this goes through the secp256k1 FFI directly instead of the
+    /// length, so this uses the crate's safe verifier instead of the
     /// 32-byte-only `Message` wrapper.
     pub(crate) fn verify_signature(
         &mut self,
@@ -91,7 +86,7 @@ impl<'a> Exec<'a> {
             let sig = secp256k1::schnorr::Signature::from_slice(sig_bytes)
                 .map_err(|_| ExecError::SchnorrSigSize)?;
 
-            if !self.verify_schnorr_bytes(&sig, msg, &pk) {
+            if !verify_schnorr_bytes(&sig, msg, &pk) {
                 return Err(ExecError::SchnorrSig);
             }
         }
@@ -100,41 +95,15 @@ impl<'a> Exec<'a> {
         // If pk.len() != 32 and is not empty, it succeeds as per BIP 341/348.
         Ok(true)
     }
+}
 
-    // BIP-348 verifies a message of any length. rust-bitcoin 0.32 pins
-    // secp256k1 0.29, and its safe `verify_schnorr` always passes a 32-byte
-    // length to libsecp256k1. secp256k1 0.30 and later accept `&[u8]`.
-    // Remove this FFI call and use the safe API after the upgrade.
-    #[allow(unsafe_code)]
-    fn verify_schnorr_bytes(
-        &self,
-        sig: &secp256k1::schnorr::Signature,
-        msg: &[u8],
-        pk: &XOnlyPublicKey,
-    ) -> bool {
-        use bitcoin::secp256k1::ffi;
-
-        // The C function does not dereference the message pointer when the
-        // length is zero, but a dangling pointer is still poor form.
-        let empty = [0u8; 1];
-        let msg_ptr = if msg.is_empty() {
-            empty.as_ptr()
-        } else {
-            msg.as_ptr()
-        };
-
-        // SAFETY: all pointers come from live secp256k1 objects and `msg` is
-        // valid for `msg.len()` bytes.
-        unsafe {
-            ffi::secp256k1_schnorrsig_verify(
-                self.secp.ctx().as_ptr(),
-                sig.as_c_ptr(),
-                msg_ptr,
-                msg.len(),
-                pk.as_c_ptr(),
-            ) == 1
-        }
-    }
+/// Verifies one Schnorr signature with a message of any length.
+fn verify_schnorr_bytes(
+    sig: &secp256k1::schnorr::Signature,
+    msg: &[u8],
+    pk: &XOnlyPublicKey,
+) -> bool {
+    crate::bip340::verify(sig.serialize(), msg, pk.serialize())
 }
 
 #[cfg(test)]
